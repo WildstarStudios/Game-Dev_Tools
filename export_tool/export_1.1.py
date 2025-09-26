@@ -1,8 +1,8 @@
 bl_info = {
     "name": "Advanced GLB Auto-Exporter",
     "author": "Your Name",
-    "version": (2, 1),
-    "blender": (4, 0, 0),
+    "version": (1, 1),
+    "blender": (4, 3, 0),
     "location": "View3D > Sidebar > GLB Export",
     "description": "Advanced GLB export with hierarchical collection separation",
     "category": "Import-Export",
