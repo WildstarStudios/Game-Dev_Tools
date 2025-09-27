@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Advanced GLB Auto-Exporter (Experimental)",
     "author": "Your Name",
-    "version": (2, 6, "beta"),
+    "version": (2, 3, "beta"),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > GLB Export",
     "description": "EXPERIMENTAL: Advanced GLB export with proper collection origin handling - USE WITH CAUTION",
