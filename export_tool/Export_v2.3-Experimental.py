@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Advanced GLB Auto-Exporter",
-    "author": "WildStar Studios",
-    "version": (2, 3, "beta"),
-    "blender": (4, 4, 0),
+    "name": "Advanced GLB Auto-Exporter (Experimental)",
+    "author": "Your Name",
+    "version": (2, 6, "beta"),
+    "blender": (4, 0, 0),
     "location": "View3D > Sidebar > GLB Export",
-    "description": "EXPERIMENTAL: Advanced GLB export with enhanced Delta Protocol optimization",
+    "description": "EXPERIMENTAL: Advanced GLB export with proper collection origin handling - USE WITH CAUTION",
     "category": "Import-Export",
 }
 
@@ -13,11 +13,10 @@ import os
 import re
 import json
 import datetime
-import hashlib
-import struct
 from bpy.props import StringProperty, BoolProperty, EnumProperty
 from bpy.app.handlers import persistent
 import mathutils
+from mathutils import Vector
 
 class ADVANCED_GLB_OT_export(bpy.types.Operator):
     bl_idname = "export.advanced_glb"
@@ -66,11 +65,12 @@ class ADVANCED_GLB_OT_execute_order_66(bpy.types.Operator):
         layout.label(text="This will delete orphaned GLB files.", icon='ERROR')
         layout.label(text="This action cannot be undone!")
         
+        # Show what will be deleted
         orphans = find_orphaned_files()
         if orphans:
             layout.label(text="Files to be deleted:")
             box = layout.box()
-            for orphan in orphans[:10]:
+            for orphan in orphans[:10]:  # Show first 10
                 box.label(text=f"• {os.path.basename(orphan)}")
             if len(orphans) > 10:
                 box.label(text=f"... and {len(orphans) - 10} more")
@@ -89,50 +89,8 @@ class ADVANCED_GLB_OT_execute_order_66(bpy.types.Operator):
             self.report({'INFO'}, "No orphaned files found to delete")
         return {'FINISHED'}
 
-class ADVANCED_GLB_OT_delete_delta_track_file(bpy.types.Operator):
-    bl_idname = "advanced_glb.delete_delta_track_file"
-    bl_label = "Reset Delta Tracking"
-    bl_description = "Delete the Delta Protocol tracking file for this blend file"
-    bl_options = {'REGISTER'}
-    
-    def execute(self, context):
-        track_file_path = get_delta_track_file_path()
-        if os.path.exists(track_file_path):
-            os.remove(track_file_path)
-            self.report({'INFO'}, f"Deleted Delta track file: {os.path.basename(track_file_path)}")
-        else:
-            self.report({'WARNING'}, "No Delta track file found")
-        return {'FINISHED'}
-
-class ADVANCED_GLB_OT_execute_delta_protocol(bpy.types.Operator):
-    bl_idname = "advanced_glb.execute_delta_protocol"
-    bl_label = "Execute Delta Protocol"
-    bl_description = "Export only items that have changed since last export"
-    bl_options = {'REGISTER'}
-    
-    def execute(self, context):
-        result = export_glb_delta(context)
-        if result == {'FINISHED'}:
-            self.report({'INFO'}, "Delta Protocol: Exported changed items only")
-        return result
-
-class ADVANCED_GLB_OT_scan_changes(bpy.types.Operator):
-    bl_idname = "advanced_glb.scan_changes"
-    bl_label = "Scan for Changes"
-    bl_description = "Preview what will be exported with Delta Protocol"
-    bl_options = {'REGISTER'}
-    
-    def execute(self, context):
-        changes = scan_for_changes()
-        if changes:
-            change_report = generate_change_report(changes)
-            self.report({'INFO'}, f"Delta Scan: {change_report}")
-        else:
-            self.report({'INFO'}, "Delta Scan: No changes detected")
-        return {'FINISHED'}
-
 class ADVANCED_GLB_PT_panel(bpy.types.Panel):
-    bl_label = "GLB Auto-Export"
+    bl_label = "GLB Auto-Export (Experimental)"
     bl_idname = "VIEW3D_PT_advanced_glb_export"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
@@ -146,7 +104,7 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
         # === EXPERIMENTAL WARNING ===
         warning_box = layout.box()
         warning_box.alert = True
-        warning_box.label(text="🧪 EXPERIMENTAL VERSION", icon='ERROR')
+        warning_box.label(text="⚠️ EXPERIMENTAL VERSION", icon='ERROR')
         warning_box.label(text="Use with caution - backup your files!")
         
         # === ESSENTIAL SETTINGS ===
@@ -178,6 +136,8 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
             if scene_props.export_path:
                 essential_box.label(text="→ Each collection as separate .glb", icon='FILE_BLEND')
                 essential_box.label(text="  Naming: {collection_name}.glb")
+                if prefs.export_individual_origins:
+                    essential_box.label(text="  Collections maintain internal layout", icon='INFO')
         
         elif scene_props.export_scope == 'OBJECT':
             if scene_props.export_path:
@@ -190,36 +150,12 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
             for line in summary_lines:
                 essential_box.label(text=line)
         
-        # Export Buttons
+        # Export Button - Always visible but disabled if no path
         button_row = essential_box.row()
-        if prefs.enable_delta_protocol:
-            button_row.operator("advanced_glb.execute_delta_protocol", icon='PLAY', text="Delta Export")
-            button_row.operator("advanced_glb.scan_changes", icon='VIEWZOOM', text="Scan")
-        else:
-            button_row.operator("export.advanced_glb", icon='EXPORT', text="Export Now")
-        
+        button_row.operator("export.advanced_glb", icon='EXPORT', text="Export Now")
         if not scene_props.export_path:
             button_row.enabled = False
             essential_box.label(text="Set export directory to enable export", icon='ERROR')
-        
-        # === DELTA PROTOCOL STATUS ===
-        if prefs.enable_delta_protocol and scene_props.export_path:
-            delta_box = layout.box()
-            delta_box.label(text="🔍 Delta Protocol Active", icon='TRACKING')
-            
-            changes = scan_for_changes()
-            if changes:
-                delta_box.label(text=f"Changes detected: {len(changes['changed'])} items")
-                if changes['new']:
-                    delta_box.label(text=f"New: {len(changes['new'])} items")
-                if changes['deleted']:
-                    delta_box.label(text=f"Deleted: {len(changes['deleted'])} items")
-                if changes['modifiers']:
-                    delta_box.label(text=f"Modifiers: {len(changes['modifiers'])} items")
-                if changes['uv']:
-                    delta_box.label(text=f"UVs: {len(changes['uv'])} items")
-            else:
-                delta_box.label(text="No changes since last export", icon='CHECKMARK')
         
         # === DIRECTORY MODIFIER INFO ===
         if scene_props.export_path:
@@ -228,6 +164,7 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
             dir_box.label(text="Use -dir:path in names to organize exports")
             dir_box.label(text="Examples: 'sword -dir:weapons' or 'enemy -dir:characters'")
             
+            # Show examples based on current scope
             if scene_props.export_scope == 'SCENE':
                 dir_box.label(text="Scene: 'scene_name -dir:levels'")
             elif scene_props.export_scope == 'COLLECTION':
@@ -257,19 +194,15 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
                 origin_row.enabled = False
                 advanced_box.label(text="Local origins not available for scene export", icon='INFO')
             else:
-                advanced_box.label(text="• Objects/collections export at 3D cursor", icon='DOT')
+                if scene_props.export_scope == 'COLLECTION':
+                    advanced_box.label(text="• Collections move as groups to cursor", icon='DOT')
+                    advanced_box.label(text="• Internal object layout preserved", icon='DOT')
+                else:
+                    advanced_box.label(text="• Objects move individually to cursor", icon='DOT')
                 advanced_box.label(text="• Original positions preserved after export", icon='DOT')
             
             # Modifiers
             advanced_box.prop(prefs, "apply_modifiers", text="Apply Modifiers Before Export")
-            
-            # Enhanced detection options
-            if prefs.enable_delta_protocol:
-                advanced_box.label(text="Enhanced Detection:", icon='ZOOM_IN')
-                advanced_box.prop(prefs, "detect_modifier_changes", text="Track Modifier Changes")
-                advanced_box.prop(prefs, "detect_uv_changes", text="Track UV Changes")
-                advanced_box.prop(prefs, "detect_normals_changes", text="Track Normals Changes")
-                advanced_box.prop(prefs, "detect_shape_keys", text="Track Shape Keys")
             
             # Detailed view
             advanced_box.prop(prefs, "show_detailed_list", text="Show Detailed Object List")
@@ -284,6 +217,21 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
             filter_box.label(text="• '-sep' on collection: Export separately", icon='COLLECTION_NEW')
             filter_box.label(text="• '-dir:path' in name: Export to subfolder", icon='FILE_FOLDER')
             filter_box.label(text="• Hidden objects/collections: Don't export", icon='HIDE_ON')
+        
+        # === EXPERIMENTAL FEATURES ===
+        if prefs.show_advanced_settings and prefs.enable_export_tracking:
+            experimental_box = layout.box()
+            experimental_box.alert = True
+            experimental_box.label(text="🧪 Experimental Features", icon='EXPERIMENTAL')
+            experimental_box.label(text="Tracking System: ON", icon='FILE_HIDDEN')
+            
+            # Track file management buttons
+            row = experimental_box.row()
+            row.operator("advanced_glb.delete_track_file", icon='TRASH')
+            
+            row = experimental_box.row()
+            op = row.operator("advanced_glb.execute_order_66", icon='COMMUNITY')
+            op.confirm = True
         
         # === DETAILED SUMMARY ===
         if scene_props.export_path and prefs.show_detailed_list:
@@ -327,31 +275,6 @@ class AdvancedGLBPreferences(bpy.types.AddonPreferences):
         description="Include hidden objects in the detailed list"
     )
     
-    # Enhanced detection settings
-    detect_modifier_changes: BoolProperty(
-        name="Track Modifier Changes",
-        default=True,
-        description="Detect changes in modifier settings, properties, and stack order"
-    )
-    
-    detect_uv_changes: BoolProperty(
-        name="Track UV Changes",
-        default=True,
-        description="Detect changes in UV maps, texture coordinates, and unwrapping"
-    )
-    
-    detect_normals_changes: BoolProperty(
-        name="Track Normals Changes",
-        default=True,
-        description="Detect changes in custom normals, auto smooth, and normal data"
-    )
-    
-    detect_shape_keys: BoolProperty(
-        name="Track Shape Keys",
-        default=True,
-        description="Detect changes in shape keys and morph targets"
-    )
-    
     # Experimental tracking settings
     enable_export_tracking: BoolProperty(
         name="Enable Export Tracking (Experimental)",
@@ -359,15 +282,16 @@ class AdvancedGLBPreferences(bpy.types.AddonPreferences):
         description="Track exported files to identify orphans. Uses .track files"
     )
     
-    # Delta Protocol settings
-    enable_delta_protocol: BoolProperty(
-        name="Enable Delta Protocol (Experimental)",
-        default=False,
-        description="Only export items that have changed since last export"
-    )
-    
     def draw(self, context):
         layout = self.layout
+        
+        # Warning box
+        warning_box = layout.box()
+        warning_box.alert = True
+        warning_box.label(text="⚠️ EXPERIMENTAL VERSION", icon='ERROR')
+        warning_box.label(text="This addon is in beta testing phase")
+        warning_box.label(text="Backup your files before use!")
+        
         layout.label(text="GLB Export Settings")
         
         # Main settings
@@ -380,43 +304,20 @@ class AdvancedGLBPreferences(bpy.types.AddonPreferences):
         # Experimental tracking section
         layout.separator()
         box = layout.box()
-        box.label(text="🧪 Experimental Features", icon='EXPERIMENTAL')
-        box.label(text="Use with caution - backup your files!", icon='ERROR')
-        
-        # Delta Protocol
-        delta_box = box.box()
-        delta_box.label(text="Delta Protocol", icon='TRACKING')
-        delta_box.prop(self, "enable_delta_protocol")
-        
-        if self.enable_delta_protocol:
-            delta_box.label(text="Exports only changed items", icon='INFO')
-            delta_box.label(text="Uses change tracking for optimization", icon='INFO')
-            
-            # Enhanced detection options
-            delta_box.separator()
-            delta_box.label(text="Enhanced Detection Options:", icon='ZOOM_IN')
-            delta_box.prop(self, "detect_modifier_changes")
-            delta_box.prop(self, "detect_uv_changes")
-            delta_box.prop(self, "detect_normals_changes")
-            delta_box.prop(self, "detect_shape_keys")
-            
-            row = delta_box.row()
-            row.operator("advanced_glb.scan_changes", icon='VIEWZOOM')
-            row.operator("advanced_glb.delete_delta_track_file", icon='TRASH')
-        
-        # Export Tracking
-        track_box = box.box()
-        track_box.label(text="Export Tracking", icon='FILE_HIDDEN')
-        track_box.prop(self, "enable_export_tracking")
+        box.label(text="Experimental Tracking System", icon='EXPERIMENTAL')
+        box.prop(self, "enable_export_tracking")
         
         if self.enable_export_tracking:
-            track_box.label(text="Tracks exported files to identify orphans", icon='INFO')
-            track_box.label(text="Creates .track files in export directories", icon='FILE_HIDDEN')
+            box.label(text="Tracks exported files to identify orphans", icon='INFO')
+            box.label(text="Creates .track files in export directories", icon='FILE_HIDDEN')
             
-            row = track_box.row()
+            # Track file management buttons
+            row = box.row()
+            row.operator("advanced_glb.delete_track_file", icon='TRASH')
+            
+            row = box.row()
             op = row.operator("advanced_glb.execute_order_66", icon='COMMUNITY')
             op.confirm = True
-            row.operator("advanced_glb.delete_track_file", icon='TRASH')
 
 class AdvancedGLBSceneProperties(bpy.types.PropertyGroup):
     export_path: StringProperty(
@@ -449,477 +350,58 @@ class AdvancedGLBSceneProperties(bpy.types.PropertyGroup):
         description="Filename for scene export (without .glb extension)"
     )
 
-# ===== ENHANCED DELTA PROTOCOL SYSTEM =====
+# ===== COLLECTION ORIGIN HANDLING =====
 
-def get_delta_track_file_path():
-    """Get the path for the delta track file"""
-    if bpy.data.filepath:
-        blend_name = os.path.splitext(os.path.basename(bpy.data.filepath))[0]
-        return os.path.join(os.path.dirname(bpy.data.filepath), f"{blend_name}.delta.track")
-    else:
-        return os.path.join(os.path.expanduser("~"), "unsaved_delta.track")
+def get_collection_center(collection_objects):
+    """Calculate the center point of all objects in a collection"""
+    if not collection_objects:
+        return Vector((0, 0, 0))
+    
+    total_position = Vector((0, 0, 0))
+    valid_objects = 0
+    
+    for obj in collection_objects:
+        if obj and obj.matrix_world:
+            total_position += obj.matrix_world.translation
+            valid_objects += 1
+    
+    if valid_objects == 0:
+        return Vector((0, 0, 0))
+    
+    return total_position / valid_objects
 
-def load_delta_track_data():
-    """Load delta tracking data from track file"""
-    track_file = get_delta_track_file_path()
-    if os.path.exists(track_file):
-        try:
-            with open(track_file, 'r') as f:
-                return json.load(f)
-        except:
-            return {}
-    return {}
+def move_collection_to_origin(collection_objects, cursor_location):
+    """Move entire collection to cursor while maintaining relative positions"""
+    if not collection_objects:
+        return {}
+    
+    # Store original positions
+    original_positions = {}
+    for obj in collection_objects:
+        if obj:
+            original_positions[obj] = obj.matrix_world.copy()
+    
+    # Calculate current center of the collection
+    collection_center = get_collection_center(collection_objects)
+    
+    # Calculate offset needed to move center to cursor
+    offset = cursor_location - collection_center
+    
+    # Apply same offset to all objects to maintain relative positions
+    for obj in collection_objects:
+        if obj:
+            new_position = obj.matrix_world.translation + offset
+            obj.matrix_world.translation = new_position
+    
+    return original_positions
 
-def save_delta_track_data(track_data):
-    """Save delta tracking data to track file"""
-    track_file = get_delta_track_file_path()
-    try:
-        with open(track_file, 'w') as f:
-            json.dump(track_data, f, indent=2)
-        return True
-    except:
-        return False
+def restore_collection_positions(original_positions):
+    """Restore collection objects to their original positions"""
+    for obj, original_matrix in original_positions.items():
+        if obj:  # Ensure object still exists
+            obj.matrix_world = original_matrix
 
-def hash_float_list(float_list):
-    """Create a stable hash for a list of floats"""
-    return hashlib.md5(struct.pack(f'{len(float_list)}f', *float_list)).hexdigest()
-
-def get_modifier_hash(modifier):
-    """Generate a comprehensive hash for a modifier including all properties"""
-    prefs = bpy.context.preferences.addons[__name__].preferences
-    if not prefs.detect_modifier_changes:
-        return hashlib.md5(f"{modifier.type}{modifier.name}".encode()).hexdigest()
-    
-    hash_data = f"{modifier.type}{modifier.name}"
-    
-    try:
-        # Get all modifier properties dynamically
-        for prop in modifier.bl_rna.properties:
-            if prop.identifier in {'rna_type', 'name'}:
-                continue
-            
-            try:
-                prop_value = getattr(modifier, prop.identifier)
-                
-                # Handle different property types
-                if hasattr(prop_value, '__iter__') and not isinstance(prop_value, str):
-                    # For arrays/lists
-                    hash_data += f"{prop.identifier}:{tuple(prop_value)}"
-                else:
-                    # For single values
-                    hash_data += f"{prop.identifier}:{prop_value}"
-            except (AttributeError, TypeError):
-                # Skip properties that can't be read
-                continue
-                
-    except Exception as e:
-        # Fallback to basic hash if detailed reading fails
-        print(f"Warning: Could not read detailed modifier properties for {modifier.name}: {e}")
-        hash_data = f"{modifier.type}{modifier.name}"
-    
-    return hashlib.md5(hash_data.encode()).hexdigest()
-
-def get_uv_hash(mesh):
-    """Generate a hash for UV maps and texture coordinates"""
-    prefs = bpy.context.preferences.addons[__name__].preferences
-    if not prefs.detect_uv_changes or not mesh or not mesh.uv_layers:
-        return "no_uv"
-    
-    hash_data = ""
-    
-    # Hash each UV layer
-    for uv_layer in mesh.uv_layers:
-        hash_data += f"layer:{uv_layer.name}active:{uv_layer.active_render}"
-        
-        # Hash UV coordinates
-        if uv_layer.data:
-            uv_coords = []
-            for uv_data in uv_layer.data:
-                uv_coords.extend([uv_data.uv.x, uv_data.uv.y])
-            hash_data += f"coords:{hash_float_list(uv_coords)}"
-    
-    return hashlib.md5(hash_data.encode()).hexdigest()
-
-def get_normals_hash(mesh):
-    """Generate a hash for normals data"""
-    prefs = bpy.context.preferences.addons[__name__].preferences
-    if not prefs.detect_normals_changes or not mesh:
-        return "no_normals"
-    
-    hash_data = ""
-    
-    try:
-        # Auto smooth and custom normals settings
-        hash_data += f"auto_smooth:{mesh.use_auto_smooth}angle:{mesh.auto_smooth_angle}"
-        hash_data += f"has_custom_normals:{mesh.has_custom_normals}"
-        
-        # Vertex normals
-        if mesh.vertices:
-            normals = []
-            for vert in mesh.vertices:
-                normals.extend([vert.normal.x, vert.normal.y, vert.normal.z])
-            hash_data += f"vertex_normals:{hash_float_list(normals)}"
-        
-        # Polygon normals
-        if mesh.polygons:
-            poly_normals = []
-            for poly in mesh.polygons:
-                poly_normals.extend([poly.normal.x, poly.normal.y, poly.normal.z])
-            hash_data += f"poly_normals:{hash_float_list(poly_normals)}"
-            
-    except Exception as e:
-        print(f"Warning: Could not read normals data: {e}")
-    
-    return hashlib.md5(hash_data.encode()).hexdigest()
-
-def get_shape_keys_hash(obj):
-    """Generate a hash for shape keys"""
-    prefs = bpy.context.preferences.addons[__name__].preferences
-    if not prefs.detect_shape_keys or not obj or not obj.data or not obj.data.shape_keys:
-        return "no_shape_keys"
-    
-    hash_data = ""
-    
-    try:
-        shape_keys = obj.data.shape_keys.key_blocks
-        hash_data += f"count:{len(shape_keys)}"
-        
-        for key in shape_keys:
-            hash_data += f"key:{key.name}value:{key.value}relative:{key.relative_key.name}"
-            
-            # Hash shape key data
-            if key.data:
-                key_data = []
-                for point in key.data:
-                    key_data.extend([point.co.x, point.co.y, point.co.z])
-                hash_data += f"data:{hash_float_list(key_data)}"
-                
-    except Exception as e:
-        print(f"Warning: Could not read shape keys: {e}")
-    
-    return hashlib.md5(hash_data.encode()).hexdigest()
-
-def get_mesh_data_hash(mesh):
-    """Generate a comprehensive hash for mesh data"""
-    hash_data = ""
-    
-    if mesh and hasattr(mesh, 'vertices'):
-        # Basic mesh properties
-        hash_data += f"verts:{len(mesh.vertices)}polys:{len(mesh.polygons)}"
-        
-        # Vertex data
-        vert_coords = []
-        for vert in mesh.vertices:
-            vert_coords.extend([vert.co.x, vert.co.y, vert.co.z])
-        hash_data += f"vertices:{hash_float_list(vert_coords)}"
-        
-        # Polygon data
-        poly_data = []
-        for poly in mesh.polygons:
-            poly_data.extend([poly.vertices[i] for i in range(poly.loop_total)])
-            poly_data.append(poly.material_index)
-        hash_data += f"polygons:{hash_float_list(poly_data)}"
-        
-        # Material assignments
-        for mat in mesh.materials:
-            if mat:
-                hash_data += f"mat:{mat.name}"
-    
-    return hashlib.md5(hash_data.encode()).hexdigest()
-
-def get_object_hash(obj):
-    """Generate a comprehensive hash representing the current state of an object"""
-    prefs = bpy.context.preferences.addons[__name__].preferences
-    
-    hash_data = ""
-    
-    # Basic properties
-    hash_data += f"name:{obj.name}type:{obj.type}"
-    hash_data += f"location:{tuple(obj.location)}rotation:{tuple(obj.rotation_euler)}scale:{tuple(obj.scale)}"
-    hash_data += f"hide_viewport:{obj.hide_viewport}hide_render:{obj.hide_render}"
-    
-    # Transform details (including delta transforms and parenting)
-    hash_data += f"matrix_world:{tuple(obj.matrix_world)}"
-    if obj.parent:
-        hash_data += f"parent:{obj.parent.name}parent_type:{obj.parent_type}"
-        hash_data += f"matrix_parent_inverse:{tuple(obj.matrix_parent_inverse)}"
-    
-    # Modifiers with enhanced detection
-    modifier_hashes = []
-    for mod in obj.modifiers:
-        modifier_hashes.append(get_modifier_hash(mod))
-    hash_data += f"modifiers:{','.join(sorted(modifier_hashes))}"
-    
-    # Materials
-    for i, mat_slot in enumerate(obj.material_slots):
-        if mat_slot and mat_slot.material:
-            hash_data += f"mat_slot_{i}:{mat_slot.material.name}"
-    
-    # Mesh-specific data
-    if obj.type == 'MESH' and obj.data:
-        mesh = obj.data
-        
-        # Basic mesh data
-        hash_data += f"mesh:{get_mesh_data_hash(mesh)}"
-        
-        # Enhanced mesh properties
-        hash_data += f"uv:{get_uv_hash(mesh)}"
-        hash_data += f"normals:{get_normals_hash(mesh)}"
-        hash_data += f"shape_keys:{get_shape_keys_hash(obj)}"
-        
-        # Additional mesh properties
-        hash_data += f"use_auto_smooth:{mesh.use_auto_smooth}auto_smooth_angle:{mesh.auto_smooth_angle}"
-        
-    # Non-mesh object types
-    elif obj.type == 'CURVE' and obj.data:
-        curve = obj.data
-        hash_data += f"curve_type:{curve.type}bevel:{curve.bevel_depth}resolution:{curve.render_resolution}"
-        
-    elif obj.type == 'SURFACE' and obj.data:
-        hash_data += f"surface_data:present"
-        
-    elif obj.type == 'FONT' and obj.data:
-        text = obj.data
-        hash_data += f"font_body:{text.body}font_size:{text.size}"
-        
-    elif obj.type == 'META' and obj.data:
-        hash_data += f"meta_data:present"
-        
-    elif obj.type == 'ARMATURE' and obj.data:
-        armature = obj.data
-        hash_data += f"armature_bones:{len(armature.bones)}"
-    
-    # Collection membership
-    collections = get_object_collections(obj)
-    collection_names = sorted([col.name for col in collections])
-    hash_data += f"collections:{','.join(collection_names)}"
-    
-    # Object constraints
-    for con in obj.constraints:
-        hash_data += f"constraint:{con.type}{con.name}"
-    
-    # Custom properties
-    for key in obj.keys():
-        if key not in {'_RNA_UI'}:
-            hash_data += f"prop_{key}:{obj[key]}"
-    
-    return hashlib.md5(hash_data.encode()).hexdigest()
-
-def get_collection_hash(collection):
-    """Generate a hash representing the current state of a collection"""
-    hash_data = ""
-    
-    # Basic properties
-    hash_data += f"name:{collection.name}"
-    hash_data += f"hide_viewport:{collection.hide_viewport}hide_render:{collection.hide_render}"
-    
-    # Object membership and their enhanced states
-    object_hashes = []
-    for obj in collection.objects:
-        if should_export_object(obj):
-            object_hashes.append(get_object_hash(obj))
-    
-    hash_data += f"objects:{','.join(sorted(object_hashes))}"
-    
-    # Child collections
-    child_hashes = []
-    for child in collection.children:
-        child_hashes.append(get_collection_hash(child))
-    
-    hash_data += f"children:{','.join(sorted(child_hashes))}"
-    
-    # Collection modifiers
-    for mod in collection.collection_modifiers:
-        hash_data += f"coll_mod:{mod.name}"
-    
-    return hashlib.md5(hash_data.encode()).hexdigest()
-
-def get_scene_hash():
-    """Generate a hash representing the current state of the scene"""
-    hash_data = ""
-    
-    scene = bpy.context.scene
-    hash_data += f"name:{scene.name}"
-    
-    # Scene properties that affect export
-    hash_data += f"unit_scale:{scene.unit_scale}frame_current:{scene.frame_current}"
-    
-    # All exportable objects with enhanced hashing
-    object_hashes = []
-    for obj in bpy.data.objects:
-        if should_export_object(obj):
-            object_hashes.append(get_object_hash(obj))
-    
-    hash_data += f"objects:{','.join(sorted(object_hashes))}"
-    
-    # Collection structure with enhanced hashing
-    collection_hashes = []
-    for col in bpy.data.collections:
-        if should_export_collection(col):
-            collection_hashes.append(get_collection_hash(col))
-    
-    hash_data += f"collections:{','.join(sorted(collection_hashes))}"
-    
-    return hashlib.md5(hash_data.encode()).hexdigest()
-
-def scan_for_changes():
-    """Scan the scene for changes since last export with enhanced detection"""
-    track_data = load_delta_track_data()
-    changes = {
-        'changed': [],
-        'new': [],
-        'deleted': [],
-        'modifiers': [],
-        'uv': [],
-        'normals': [],
-        'shape_keys': []
-    }
-    
-    current_scene_hash = get_scene_hash()
-    
-    # Check if scene has changed
-    if 'scene_hash' not in track_data or track_data['scene_hash'] != current_scene_hash:
-        changes['changed'].append(('SCENE', 'Scene'))
-    
-    # Enhanced object change detection
-    for obj in bpy.data.objects:
-        if not should_export_object(obj):
-            continue
-            
-        current_obj_hash = get_object_hash(obj)
-        obj_key = f"object_{obj.name}"
-        
-        if obj_key not in track_data.get('objects', {}):
-            changes['new'].append(('OBJECT', obj.name))
-        else:
-            old_hash = track_data['objects'][obj_key]
-            if old_hash != current_obj_hash:
-                changes['changed'].append(('OBJECT', obj.name))
-                
-                # Detect specific types of changes
-                if detect_modifier_changes(obj, track_data):
-                    changes['modifiers'].append(('OBJECT', obj.name))
-                if detect_uv_changes(obj, track_data):
-                    changes['uv'].append(('OBJECT', obj.name))
-                if detect_normals_changes(obj, track_data):
-                    changes['normals'].append(('OBJECT', obj.name))
-                if detect_shape_key_changes(obj, track_data):
-                    changes['shape_keys'].append(('OBJECT', obj.name))
-    
-    # Enhanced collection change detection
-    for col in bpy.data.collections:
-        if not should_export_collection(col):
-            continue
-            
-        current_col_hash = get_collection_hash(col)
-        col_key = f"collection_{col.name}"
-        
-        if col_key not in track_data.get('collections', {}):
-            changes['new'].append(('COLLECTION', col.name))
-        elif track_data['collections'][col_key] != current_col_hash:
-            changes['changed'].append(('COLLECTION', col.name))
-    
-    # Check for deleted items
-    if 'objects' in track_data:
-        for obj_key in track_data['objects']:
-            obj_name = obj_key.replace('object_', '')
-            if not any(obj.name == obj_name for obj in bpy.data.objects):
-                changes['deleted'].append(('OBJECT', obj_name))
-    
-    if 'collections' in track_data:
-        for col_key in track_data['collections']:
-            col_name = col_key.replace('collection_', '')
-            if not any(col.name == col_name for col in bpy.data.collections):
-                changes['deleted'].append(('COLLECTION', col_name))
-    
-    return changes
-
-def detect_modifier_changes(obj, track_data):
-    """Detect if modifier changes occurred"""
-    prefs = bpy.context.preferences.addons[__name__].preferences
-    if not prefs.detect_modifier_changes:
-        return False
-    
-    obj_key = f"object_{obj.name}"
-    old_hash = track_data.get('objects', {}).get(obj_key, "")
-    
-    # Simple check - if the object has modifiers and the hash changed, likely modifier changes
-    return len(obj.modifiers) > 0 and old_hash != get_object_hash(obj)
-
-def detect_uv_changes(obj, track_data):
-    """Detect if UV changes occurred"""
-    prefs = bpy.context.preferences.addons[__name__].preferences
-    if not prefs.detect_uv_changes or obj.type != 'MESH' or not obj.data:
-        return False
-    
-    return True  # UV changes are included in the object hash
-
-def detect_normals_changes(obj, track_data):
-    """Detect if normals changes occurred"""
-    prefs = bpy.context.preferences.addons[__name__].preferences
-    if not prefs.detect_normals_changes or obj.type != 'MESH' or not obj.data:
-        return False
-    
-    return True  # Normals changes are included in the object hash
-
-def detect_shape_key_changes(obj, track_data):
-    """Detect if shape key changes occurred"""
-    prefs = bpy.context.preferences.addons[__name__].preferences
-    if not prefs.detect_shape_keys or obj.type != 'MESH' or not obj.data or not obj.data.shape_keys:
-        return False
-    
-    return True  # Shape key changes are included in the object hash
-
-def generate_change_report(changes):
-    """Generate a human-readable report of changes"""
-    report_parts = []
-    
-    if changes['changed']:
-        report_parts.append(f"{len(changes['changed'])} changed")
-    if changes['new']:
-        report_parts.append(f"{len(changes['new'])} new")
-    if changes['deleted']:
-        report_parts.append(f"{len(changes['deleted'])} deleted")
-    if changes['modifiers']:
-        report_parts.append(f"{len(changes['modifiers'])} modifiers")
-    if changes['uv']:
-        report_parts.append(f"{len(changes['uv'])} UVs")
-    if changes['normals']:
-        report_parts.append(f"{len(changes['normals'])} normals")
-    if changes['shape_keys']:
-        report_parts.append(f"{len(changes['shape_keys'])} shape keys")
-    
-    return ", ".join(report_parts) if report_parts else "no changes"
-
-def update_delta_track_data():
-    """Update delta track data with current state"""
-    track_data = {}
-    
-    # Store scene hash
-    track_data['scene_hash'] = get_scene_hash()
-    track_data['last_update'] = datetime.datetime.now().isoformat()
-    track_data['blender_version'] = bpy.app.version_string
-    
-    # Store collection hashes
-    track_data['collections'] = {}
-    for col in bpy.data.collections:
-        if should_export_collection(col):
-            track_data['collections'][f"collection_{col.name}"] = get_collection_hash(col)
-    
-    # Store object hashes
-    track_data['objects'] = {}
-    for obj in bpy.data.objects:
-        if should_export_object(obj):
-            track_data['objects'][f"object_{obj.name}"] = get_object_hash(obj)
-    
-    save_delta_track_data(track_data)
-    return track_data
-
-# ... (rest of the code remains the same as previous version for export functions, UI, etc.)
-# The export functions, UI drawing, and other systems remain unchanged from the previous implementation
-# but will use the enhanced detection system automatically.
-
-# ===== EXISTING FUNCTIONS (from previous code with minor enhancements) =====
+# ===== TRACKING SYSTEM =====
 
 def get_track_file_path():
     """Get the path for the track file based on blend file name"""
@@ -950,60 +432,682 @@ def save_track_data(track_data):
     except:
         return False
 
-# ... (rest of the existing functions remain the same but will use enhanced detection)
+def update_track_file(exported_files, export_path):
+    """Update track file with current export information"""
+    prefs = bpy.context.preferences.addons[__name__].preferences
+    if not prefs.enable_export_tracking:
+        return
+    
+    track_data = load_track_data()
+    
+    # Initialize export path data if not exists
+    if export_path not in track_data:
+        track_data[export_path] = {}
+    
+    # Update with current export
+    track_data[export_path]['last_export'] = {
+        'timestamp': datetime.datetime.now().isoformat(),
+        'files': exported_files,
+        'blend_file': bpy.data.filepath or "unsaved"
+    }
+    
+    # Keep history of last 10 exports for this path
+    if 'history' not in track_data[export_path]:
+        track_data[export_path]['history'] = []
+    
+    track_data[export_path]['history'].append({
+        'timestamp': datetime.datetime.now().isoformat(),
+        'files': exported_files
+    })
+    
+    # Keep only last 10 history entries
+    track_data[export_path]['history'] = track_data[export_path]['history'][-10:]
+    
+    save_track_data(track_data)
 
-# Note: The export_glb_delta, export_glb_normal, and other export functions
-# remain structurally the same but now benefit from the enhanced change detection
+def find_orphaned_files():
+    """Find orphaned GLB files based on tracking data"""
+    track_data = load_track_data()
+    orphans = []
+    
+    for export_path, path_data in track_data.items():
+        if not os.path.exists(export_path):
+            continue
+            
+        if 'last_export' not in path_data:
+            continue
+        
+        # Get files that were exported in the last export
+        last_export_files = set(path_data['last_export']['files'])
+        
+        # Find all GLB files in the export directory and subdirectories
+        current_files = set()
+        for root, dirs, files in os.walk(export_path):
+            for file in files:
+                if file.lower().endswith('.glb'):
+                    full_path = os.path.join(root, file)
+                    current_files.add(full_path)
+        
+        # Orphans are files that exist but weren't in the last export
+        for file_path in current_files:
+            if file_path not in last_export_files:
+                orphans.append(file_path)
+    
+    return orphans
 
-def export_glb_delta(context):
-    """Export only items that have changed (Enhanced Delta Protocol)"""
+def cleanup_orphaned_files():
+    """Delete orphaned GLB files and update track file"""
+    orphans = find_orphaned_files()
+    deleted_files = []
+    
+    for orphan in orphans:
+        try:
+            os.remove(orphan)
+            deleted_files.append(orphan)
+            print(f"🗑️ Deleted orphaned file: {orphan}")
+        except Exception as e:
+            print(f"❌ Failed to delete {orphan}: {str(e)}")
+    
+    # Update track file to remove references to deleted files
+    track_data = load_track_data()
+    for export_path, path_data in track_data.items():
+        if 'last_export' in path_data:
+            # Remove deleted files from last_export record
+            path_data['last_export']['files'] = [
+                f for f in path_data['last_export']['files'] 
+                if f not in deleted_files and os.path.exists(f)
+            ]
+        
+        if 'history' in path_data:
+            # Clean up history entries too
+            for history_entry in path_data['history']:
+                history_entry['files'] = [
+                    f for f in history_entry['files']
+                    if f not in deleted_files and os.path.exists(f)
+                ]
+    
+    save_track_data(track_data)
+    return deleted_files
+
+# ===== EXISTING FUNCTIONS =====
+
+def parse_modifiers(name):
+    """Parse modifiers from name and return clean name + modifiers dict"""
+    modifiers = {
+        'dir': None,
+        'sep': False,
+        'dk': False
+    }
+    
+    clean_name = name.strip()
+    
+    # Extract -dir:path modifier
+    dir_match = re.search(r'-dir:([^\s]+)', clean_name)
+    if dir_match:
+        modifiers['dir'] = dir_match.group(1)
+        clean_name = clean_name.replace(dir_match.group(0), '').strip()
+    
+    # Extract boolean modifiers
+    modifiers['sep'] = '-sep' in clean_name
+    modifiers['dk'] = '-dk' in clean_name
+    
+    # Remove boolean modifiers from clean name
+    clean_name = re.sub(r'\s+-sep\s*', ' ', clean_name).strip()
+    clean_name = re.sub(r'\s+-dk\s*', ' ', clean_name).strip()
+    
+    # Clean up any extra spaces
+    clean_name = re.sub(r'\s+', ' ', clean_name).strip()
+    
+    return clean_name, modifiers
+
+def get_final_export_path(base_path, dir_modifier, clean_name, scope):
+    """Get the final export path with directory modifiers applied"""
+    if dir_modifier:
+        # Sanitize path and create directories
+        safe_path = os.path.join(base_path, dir_modifier)
+        return os.path.join(safe_path, f"{clean_name}.glb")
+    else:
+        return os.path.join(base_path, f"{clean_name}.glb")
+
+def ensure_directory_exists(filepath):
+    """Ensure the directory for a filepath exists, return created status"""
+    directory = os.path.dirname(filepath)
+    if directory and not os.path.exists(directory):
+        os.makedirs(directory, exist_ok=True)
+        return True
+    return False
+
+def get_collection_for_object(obj):
+    """Get the first collection that contains the object (for directory resolution)"""
+    for collection in bpy.data.collections:
+        if obj.name in collection.objects:
+            return collection
+    return None
+
+def resolve_export_directory(obj, collection, export_scope, base_export_path):
+    """Resolve the export directory based on scope and modifiers"""
+    obj_clean, obj_modifiers = parse_modifiers(obj.name)
+    
+    if export_scope == 'SCENE':
+        scene_props = bpy.context.scene.advanced_glb_props
+        scene_clean, scene_modifiers = parse_modifiers(scene_props.scene_export_filename)
+        dir_path = scene_modifiers.get('dir')
+        if dir_path:
+            return os.path.join(base_export_path, dir_path)
+        return base_export_path
+    
+    elif export_scope == 'COLLECTION':
+        if collection:
+            col_clean, col_modifiers = parse_modifiers(collection.name)
+            dir_path = col_modifiers.get('dir')
+            if dir_path:
+                return os.path.join(base_export_path, dir_path)
+        return base_export_path
+    
+    elif export_scope == 'OBJECT':
+        if collection:
+            col_clean, col_modifiers = parse_modifiers(collection.name)
+            dir_path = col_modifiers.get('dir')
+            if dir_path:
+                return os.path.join(base_export_path, dir_path)
+        
+        dir_path = obj_modifiers.get('dir')
+        if dir_path:
+            return os.path.join(base_export_path, dir_path)
+        
+        return base_export_path
+    
+    return base_export_path
+
+def get_quick_summary(scene_props, prefs):
+    """Generate quick summary of what will be exported"""
+    summary_lines = []
+    
+    if scene_props.export_scope == 'SCENE':
+        objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
+        scene_clean, scene_modifiers = parse_modifiers(scene_props.scene_export_filename)
+        
+        summary_lines.append(f"📦 Exporting {len(objects_to_export)} objects as single file")
+        if scene_modifiers.get('dir'):
+            summary_lines.append(f"📁 To: {scene_modifiers['dir']}/")
+        
+    elif scene_props.export_scope == 'COLLECTION':
+        export_roots = find_collection_export_roots(bpy.context.scene.collection)
+        object_count = sum(
+            len([obj for obj in col.all_objects if should_export_object(obj)])
+            for root_col, collections in export_roots.items()
+            for col in collections
+        )
+        
+        summary_lines.append(f"📦 Exporting {len(export_roots)} collections")
+        summary_lines.append(f"📊 Total objects: {object_count}")
+        
+        dir_collections = []
+        for root_col, collections_in_root in export_roots.items():
+            col_clean, col_modifiers = parse_modifiers(root_col.name)
+            if col_modifiers.get('dir'):
+                dir_collections.append(f"{col_clean} → {col_modifiers['dir']}/")
+        
+        if dir_collections:
+            summary_lines.append("📁 Directories:")
+            for dir_info in dir_collections[:3]:
+                summary_lines.append(f"  {dir_info}")
+            if len(dir_collections) > 3:
+                summary_lines.append(f"  ... and {len(dir_collections) - 3} more")
+        
+        if prefs.export_individual_origins:
+            summary_lines.append("📍 Collections maintain internal layout")
+        
+    elif scene_props.export_scope == 'OBJECT':
+        objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
+        summary_lines.append(f"📦 Exporting {len(objects_to_export)} objects")
+        
+        dir_objects = []
+        for obj in objects_to_export[:5]:
+            collection = get_collection_for_object(obj)
+            export_dir = resolve_export_directory(obj, collection, 'OBJECT', scene_props.export_path)
+            if export_dir != scene_props.export_path:
+                obj_clean, obj_modifiers = parse_modifiers(obj.name)
+                dir_name = os.path.basename(export_dir)
+                dir_objects.append(f"{obj_clean} → {dir_name}/")
+        
+        if dir_objects:
+            summary_lines.append("📁 Directories:")
+            for dir_info in dir_objects:
+                summary_lines.append(f"  {dir_info}")
+            if len(objects_to_export) > 5:
+                summary_lines.append(f"  ... and {len(objects_to_export) - 5} more objects")
+        
+        if prefs.export_individual_origins:
+            summary_lines.append("📍 Each object at local origin")
+    
+    return summary_lines
+
+def get_detailed_summary(scene_props, prefs):
+    """Generate detailed summary of what will be exported"""
+    summary_lines = []
+    
+    if scene_props.export_scope == 'SCENE':
+        objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
+        scene_clean, scene_modifiers = parse_modifiers(scene_props.scene_export_filename)
+        
+        summary_lines.append(f"Scene Export: {len(objects_to_export)} objects")
+        summary_lines.append(f"File: {scene_clean}.glb")
+        if scene_modifiers.get('dir'):
+            summary_lines.append(f"Directory: {scene_modifiers['dir']}")
+        
+        if prefs.show_hidden_objects:
+            excluded_objects = [obj for obj in bpy.data.objects if not should_export_object(obj)]
+            if excluded_objects:
+                summary_lines.append("\nExcluded objects:")
+                for obj in excluded_objects:
+                    reason = get_object_exclusion_reason(obj)
+                    summary_lines.append(f"  • {obj.name} ({reason})")
+        
+    elif scene_props.export_scope == 'COLLECTION':
+        export_roots = find_collection_export_roots(bpy.context.scene.collection)
+        summary_lines.append(f"Collection Export: {len(export_roots)} collections")
+        
+        for root_collection, collections_in_root in export_roots.items():
+            col_clean, col_modifiers = parse_modifiers(root_collection.name)
+            object_count = sum(len([obj for obj in col.all_objects if should_export_object(obj)]) 
+                             for col in collections_in_root)
+            
+            dir_info = f" → {col_modifiers['dir']}/" if col_modifiers.get('dir') else ""
+            summary_lines.append(f"\n• {col_clean}.glb{dir_info}: {object_count} objects")
+            
+            if len(collections_in_root) > 1:
+                collection_list = " + ".join([parse_modifiers(col.name)[0] for col in collections_in_root])
+                summary_lines.append(f"  Includes: {collection_list}")
+            
+            if prefs.show_hidden_objects:
+                for col in collections_in_root:
+                    objects_in_col = [obj for obj in col.all_objects if should_export_object(obj)]
+                    if objects_in_col:
+                        summary_lines.append(f"  {parse_modifiers(col.name)[0]}:")
+                        for obj in objects_in_col:
+                            summary_lines.append(f"    • {obj.name} ({obj.type})")
+        
+        if prefs.show_hidden_objects:
+            excluded_collections = [col for col in bpy.data.collections if not should_export_collection(col)]
+            if excluded_collections:
+                summary_lines.append("\nExcluded collections:")
+                for col in excluded_collections:
+                    reason = get_collection_exclusion_reason(col)
+                    summary_lines.append(f"  • {col.name} ({reason})")
+    
+    elif scene_props.export_scope == 'OBJECT':
+        objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
+        summary_lines.append(f"Object Export: {len(objects_to_export)} objects")
+        
+        for obj in objects_to_export:
+            collection = get_collection_for_object(obj)
+            export_dir = resolve_export_directory(obj, collection, 'OBJECT', scene_props.export_path)
+            obj_clean, obj_modifiers = parse_modifiers(obj.name)
+            
+            dir_info = ""
+            if export_dir != scene_props.export_path:
+                dir_name = os.path.basename(export_dir)
+                dir_info = f" → {dir_name}/"
+            
+            summary_lines.append(f"• {obj_clean}.glb{dir_info} ({obj.type})")
+        
+        if prefs.show_hidden_objects:
+            excluded_objects = [obj for obj in bpy.data.objects if not should_export_object(obj)]
+            if excluded_objects:
+                summary_lines.append("\nExcluded objects:")
+                for obj in excluded_objects:
+                    reason = get_object_exclusion_reason(obj)
+                    summary_lines.append(f"  • {obj.name} ({reason})")
+    
+    return summary_lines
+
+def find_collection_export_roots(scene_collection):
+    """Find all collection export roots. ALL collections are exportable unless they have -dk."""
+    export_roots = {}
+    
+    def traverse_collections(collection, current_root=None):
+        """Recursively traverse collections to find export roots"""
+        clean_name, modifiers = parse_modifiers(collection.name)
+        
+        if modifiers['dk'] or not should_export_collection(collection):
+            return
+        
+        if modifiers['sep']:
+            current_root = collection
+            if collection not in export_roots:
+                export_roots[collection] = []
+        
+        if current_root is None:
+            current_root = collection
+            if collection not in export_roots:
+                export_roots[collection] = []
+        
+        if current_root is not None and collection not in export_roots[current_root]:
+            export_roots[current_root].append(collection)
+        
+        for child_collection in collection.children:
+            traverse_collections(child_collection, current_root)
+    
+    for child_collection in scene_collection.children:
+        traverse_collections(child_collection)
+    
+    return export_roots
+
+def get_object_exclusion_reason(obj):
+    """Get reason why an object is excluded from export"""
+    clean_name, modifiers = parse_modifiers(obj.name)
+    
+    reasons = []
+    if modifiers['dk']:
+        reasons.append("'-dk' modifier")
+    if obj.hide_viewport:
+        reasons.append("hidden in viewport")
+    if obj.hide_render:
+        reasons.append("hidden in renders")
+    if obj.type not in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT', 'ARMATURE'}:
+        reasons.append("non-exportable type")
+    return ", ".join(reasons) or "unknown reason"
+
+def get_collection_exclusion_reason(col):
+    """Get reason why a collection is excluded from export"""
+    clean_name, modifiers = parse_modifiers(col.name)
+    
+    reasons = []
+    if modifiers['dk']:
+        reasons.append("'-dk' modifier")
+    if col.hide_viewport:
+        reasons.append("hidden in viewport")
+    if col.hide_render:
+        reasons.append("hidden in renders")
+    return ", ".join(reasons) or "unknown reason"
+
+def should_export_object(obj):
+    """Determine if an object should be exported"""
+    clean_name, modifiers = parse_modifiers(obj.name)
+    
+    if modifiers['dk']:
+        return False
+    
+    if obj.hide_viewport or obj.hide_render:
+        return False
+    
+    if obj.type not in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT', 'ARMATURE'}:
+        return False
+    
+    return True
+
+def should_export_collection(col):
+    """Determine if a collection should be exported"""
+    clean_name, modifiers = parse_modifiers(col.name)
+    
+    if modifiers['dk']:
+        return False
+    
+    if col.hide_viewport or col.hide_render:
+        return False
+    
+    return True
+
+def move_to_3d_cursor(obj, cursor_location):
+    """Move object to 3D cursor while preserving its local transform"""
+    world_matrix = obj.matrix_world.copy()
+    offset = cursor_location - world_matrix.to_translation()
+    obj.matrix_world.translation = world_matrix.translation + offset
+
+def restore_original_position(obj, original_matrix):
+    """Restore object to its original position"""
+    obj.matrix_world = original_matrix
+
+def export_glb(context):
     scene_props = context.scene.advanced_glb_props
     prefs = context.preferences.addons[__name__].preferences
     
     if not scene_props.export_path:
-        print("Delta Protocol failed: No export directory specified")
+        print("Export failed: No export directory specified")
         return {'CANCELLED'}
     
-    print("🔍 Enhanced Delta Protocol: Scanning for changes...")
-    changes = scan_for_changes()
+    if not os.path.exists(scene_props.export_path):
+        os.makedirs(scene_props.export_path, exist_ok=True)
     
-    if not any(len(changes[key]) > 0 for key in changes):
-        print("✅ Enhanced Delta Protocol: No changes detected, skipping export")
-        return {'FINISHED'}
+    # Store original positions for restoration
+    original_positions = {}
+    cursor_location = bpy.context.scene.cursor.location.copy()
+    created_directories = set()
+    exported_files = []  # Track all files we export in this session
     
-    print(f"✅ Enhanced Delta Protocol: Found {generate_change_report(changes)}")
+    try:
+        # Handle individual origins if requested (disabled for scene export)
+        if prefs.export_individual_origins and scene_props.export_scope != 'SCENE':
+            print("📍 Using local origins - moving to 3D cursor...")
+            
+            if scene_props.export_scope == 'COLLECTION':
+                # Move each collection as a group to maintain internal layout
+                export_roots = find_collection_export_roots(bpy.context.scene.collection)
+                for root_collection, collections_in_root in export_roots.items():
+                    # Get all objects from all collections in this export root
+                    objects_in_root = []
+                    for col in collections_in_root:
+                        objects_in_root.extend([obj for obj in col.all_objects if should_export_object(obj)])
+                    
+                    if objects_in_root:
+                        # Move entire collection group to cursor
+                        collection_positions = move_collection_to_origin(objects_in_root, cursor_location)
+                        original_positions.update(collection_positions)
+                        print(f"  Moved collection '{root_collection.name}' as group ({len(objects_in_root)} objects)")
+            
+            elif scene_props.export_scope == 'OBJECT':
+                # Move each object individually to 3D cursor
+                for obj in bpy.data.objects:
+                    if should_export_object(obj):
+                        original_positions[obj] = obj.matrix_world.copy()
+                        move_to_3d_cursor(obj, cursor_location)
+        
+        # Set common export settings
+        export_settings = {
+            'export_format': 'GLB',
+            'export_apply': prefs.apply_modifiers,
+            'export_yup': True
+        }
+        
+        # Handle export scope
+        if scene_props.export_scope == 'SCENE':
+            # Export entire scene as single file
+            scene_clean, scene_modifiers = parse_modifiers(scene_props.scene_export_filename)
+            export_path = get_final_export_path(scene_props.export_path, scene_modifiers.get('dir'), scene_clean, 'SCENE')
+            
+            if ensure_directory_exists(export_path):
+                print(f"📁 Created directory: {os.path.dirname(export_path)}")
+            
+            export_settings['filepath'] = export_path
+            export_settings['use_selection'] = False
+            
+            try:
+                # Deselect all, then select exportable objects
+                bpy.ops.object.select_all(action='DESELECT')
+                for obj in bpy.data.objects:
+                    if should_export_object(obj):
+                        obj.select_set(True)
+                
+                bpy.ops.export_scene.gltf(**export_settings)
+                print(f"✅ Exported scene to: {export_path}")
+                if scene_modifiers.get('dir'):
+                    print(f"📁 Directory modifier: {scene_modifiers['dir']}")
+                
+                exported_files.append(export_path)
+                return {'FINISHED'}
+            except Exception as e:
+                print(f"❌ Scene export failed: {str(e)}")
+                return {'CANCELLED'}
+        
+        elif scene_props.export_scope == 'COLLECTION':
+            # Export each collection export root individually
+            export_roots = find_collection_export_roots(bpy.context.scene.collection)
+            success_count = 0
+            
+            for root_collection, collections_in_root in export_roots.items():
+                # Parse collection name and modifiers
+                col_clean, col_modifiers = parse_modifiers(root_collection.name)
+                
+                # Build export path with directory modifier
+                export_path = get_final_export_path(scene_props.export_path, col_modifiers.get('dir'), col_clean, 'COLLECTION')
+                
+                # Create directory if needed
+                if ensure_directory_exists(export_path):
+                    dir_created = os.path.dirname(export_path)
+                    if dir_created not in created_directories:
+                        print(f"📁 Created directory: {dir_created}")
+                        created_directories.add(dir_created)
+                
+                # Select all objects from all collections in this export root
+                bpy.ops.object.select_all(action='DESELECT')
+                object_count = 0
+                
+                for col in collections_in_root:
+                    for obj in col.all_objects:
+                        if should_export_object(obj):
+                            obj.select_set(True)
+                            object_count += 1
+                
+                if object_count == 0:
+                    print(f"⚠️ Skipping '{col_clean}': No exportable objects")
+                    continue
+                
+                # Update export settings
+                root_settings = export_settings.copy()
+                root_settings['filepath'] = export_path
+                root_settings['use_selection'] = True
+                
+                try:
+                    bpy.ops.export_scene.gltf(**root_settings)
+                    collection_list = ", ".join([parse_modifiers(col.name)[0] for col in collections_in_root])
+                    print(f"✅ Exported '{col_clean}' to: {export_path}")
+                    if col_modifiers.get('dir'):
+                        print(f"📁 Directory modifier: {col_modifiers['dir']}")
+                    print(f"   Contains {object_count} objects from: {collection_list}")
+                    success_count += 1
+                    
+                    exported_files.append(export_path)
+                except Exception as e:
+                    print(f"❌ Collection export failed for '{col_clean}': {str(e)}")
+            
+            return {'FINISHED'} if success_count > 0 else {'CANCELLED'}
+        
+        elif scene_props.export_scope == 'OBJECT':
+            # Export each object individually
+            success_count = 0
+            
+            for obj in bpy.data.objects:
+                if not should_export_object(obj):
+                    continue
+                
+                # Get collection for directory resolution
+                collection = get_collection_for_object(obj)
+                
+                # Parse object name and modifiers
+                obj_clean, obj_modifiers = parse_modifiers(obj.name)
+                
+                # Resolve export directory based on priority
+                export_dir = resolve_export_directory(obj, collection, 'OBJECT', scene_props.export_path)
+                export_path = os.path.join(export_dir, f"{obj_clean}.glb")
+                
+                # Create directory if needed
+                if ensure_directory_exists(export_path):
+                    dir_created = os.path.dirname(export_path)
+                    if dir_created not in created_directories:
+                        print(f"📁 Created directory: {dir_created}")
+                        created_directories.add(dir_created)
+                
+                # Select only this object
+                bpy.ops.object.select_all(action='DESELECT')
+                obj.select_set(True)
+                
+                # Update export settings
+                object_settings = export_settings.copy()
+                object_settings['filepath'] = export_path
+                object_settings['use_selection'] = True
+                
+                try:
+                    bpy.ops.export_scene.gltf(**object_settings)
+                    print(f"✅ Exported '{obj_clean}' to: {export_path}")
+                    
+                    # Show which directory modifier was used
+                    if collection:
+                        col_clean, col_modifiers = parse_modifiers(collection.name)
+                        if col_modifiers.get('dir'):
+                            print(f"📁 Using collection's directory: {col_modifiers['dir']}")
+                        elif obj_modifiers.get('dir'):
+                            print(f"📁 Using object's directory: {obj_modifiers['dir']}")
+                    
+                    success_count += 1
+                    exported_files.append(export_path)
+                except Exception as e:
+                    print(f"❌ Object export failed for '{obj_clean}': {str(e)}")
+            
+            return {'FINISHED'} if success_count > 0 else {'CANCELLED'}
+        
+        return {'CANCELLED'}
     
-    # Enhanced logging for specific change types
-    if changes['modifiers']:
-        print("📊 Modifier changes detected in objects:")
-        for change in changes['modifiers']:
-            print(f"   - {change[1]}")
-    
-    if changes['uv']:
-        print("📊 UV changes detected in objects:")
-        for change in changes['uv']:
-            print(f"   - {change[1]}")
-    
-    # Rest of the export logic remains the same but with enhanced detection
-    # ... (existing export logic)
+    finally:
+        # Update tracking file if we exported anything
+        if exported_files and prefs.enable_export_tracking:
+            update_track_file(exported_files, scene_props.export_path)
+            print(f"📊 Tracking updated: {len(exported_files)} files recorded")
+        
+        # Always restore original positions if we moved objects
+        if original_positions:
+            print("📍 Restoring original object positions...")
+            
+            # Check if we moved collections as groups or individual objects
+            if scene_props.export_scope == 'COLLECTION' and prefs.export_individual_origins:
+                # For collections, we need to restore groups together
+                # Group positions by collection export root
+                collection_groups = {}
+                export_roots = find_collection_export_roots(bpy.context.scene.collection)
+                
+                for root_collection, collections_in_root in export_roots.items():
+                    objects_in_root = []
+                    for col in collections_in_root:
+                        objects_in_root.extend([obj for obj in col.all_objects if obj in original_positions])
+                    
+                    if objects_in_root:
+                        # Restore this collection group
+                        for obj in objects_in_root:
+                            if obj in original_positions:
+                                obj.matrix_world = original_positions[obj]
+                
+                # Restore any remaining individual objects
+                for obj, original_matrix in original_positions.items():
+                    if obj and obj not in collection_groups:
+                        obj.matrix_world = original_matrix
+            else:
+                # For objects or when not using collection groups, restore individually
+                for obj, original_matrix in original_positions.items():
+                    if obj:
+                        obj.matrix_world = original_matrix
 
-# Register all classes and handlers
-def register():
-    # Register all operator classes
-    classes = [
-        ADVANCED_GLB_OT_export,
-        ADVANCED_GLB_OT_delete_track_file,
-        ADVANCED_GLB_OT_execute_order_66,
-        ADVANCED_GLB_OT_delete_delta_track_file,
-        ADVANCED_GLB_OT_execute_delta_protocol,
-        ADVANCED_GLB_OT_scan_changes,
-        ADVANCED_GLB_PT_panel,
-        AdvancedGLBPreferences,
-        AdvancedGLBSceneProperties
-    ]
+@persistent
+def on_save_handler(dummy):
+    if not bpy.context.preferences.addons.get(__name__):
+        return
     
-    for cls in classes:
-        bpy.utils.register_class(cls)
+    scene_props = bpy.context.scene.advanced_glb_props
+    if not scene_props.auto_export_on_save:
+        return
+    
+    if not scene_props.export_path:
+        print("Auto-export skipped: Export directory not configured")
+        return
+    
+    export_glb(bpy.context)
+
+def register():
+    bpy.utils.register_class(ADVANCED_GLB_OT_export)
+    bpy.utils.register_class(ADVANCED_GLB_OT_delete_track_file)
+    bpy.utils.register_class(ADVANCED_GLB_OT_execute_order_66)
+    bpy.utils.register_class(ADVANCED_GLB_PT_panel)
+    bpy.utils.register_class(AdvancedGLBPreferences)
+    bpy.utils.register_class(AdvancedGLBSceneProperties)
     
     bpy.types.Scene.advanced_glb_props = bpy.props.PointerProperty(type=AdvancedGLBSceneProperties)
     
@@ -1011,21 +1115,12 @@ def register():
         bpy.app.handlers.save_post.append(on_save_handler)
 
 def unregister():
-    # Unregister all classes
-    classes = [
-        ADVANCED_GLB_OT_export,
-        ADVANCED_GLB_OT_delete_track_file,
-        ADVANCED_GLB_OT_execute_order_66,
-        ADVANCED_GLB_OT_delete_delta_track_file,
-        ADVANCED_GLB_OT_execute_delta_protocol,
-        ADVANCED_GLB_OT_scan_changes,
-        ADVANCED_GLB_PT_panel,
-        AdvancedGLBPreferences,
-        AdvancedGLBSceneProperties
-    ]
-    
-    for cls in classes:
-        bpy.utils.unregister_class(cls)
+    bpy.utils.unregister_class(ADVANCED_GLB_OT_export)
+    bpy.utils.unregister_class(ADVANCED_GLB_OT_delete_track_file)
+    bpy.utils.unregister_class(ADVANCED_GLB_OT_execute_order_66)
+    bpy.utils.unregister_class(ADVANCED_GLB_PT_panel)
+    bpy.utils.unregister_class(AdvancedGLBPreferences)
+    bpy.utils.unregister_class(AdvancedGLBSceneProperties)
     
     del bpy.types.Scene.advanced_glb_props
     
