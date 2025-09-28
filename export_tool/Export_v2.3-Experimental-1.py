@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Advanced GLB Auto-Exporter (Experimental)",
-    "author": "Your Name",
+    "author": "WildStar Studios",
     "version": (2, 3, "beta 1"),
     "blender": (4, 0, 0),
     "location": "View3D > Sidebar > GLB Export",
