@@ -1,6 +1,6 @@
 bl_info = {
     "name": "Advanced GLB Auto-Exporter",
-    "author": "Your Name",
+    "author": "WildStar Studios",
     "version": (1, 0),
     "blender": (4, 3, 0),
     "location": "View3D > Sidebar > GLB Export",
@@ -475,3 +475,4 @@ def unregister():
 if __name__ == "__main__":
 
     register()
+
