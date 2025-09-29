@@ -327,7 +327,7 @@ class AdvancedGLBPreferences(bpy.types.AddonPreferences):
     # Tracking settings
     enable_export_tracking: BoolProperty(
         name="Enable Export Tracking",
-        default=False,
+        default=True,
         description="Track exported files to identify orphans. Uses .track files"
     )
     
