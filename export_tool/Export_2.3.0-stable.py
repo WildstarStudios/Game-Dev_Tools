@@ -387,7 +387,7 @@ class AdvancedGLBSceneProperties(bpy.types.PropertyGroup):
     
     auto_export_on_save: BoolProperty(
         name="Auto Export on Save",
-        default=False,
+        default=True,
         description="Automatically export when saving the Blender file"
     )
     
