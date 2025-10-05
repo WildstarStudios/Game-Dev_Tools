@@ -413,7 +413,7 @@ class AdvancedGLBSceneProperties(bpy.types.PropertyGroup):
         items=[
             ('GLB', "GLB compatible with 2.8+", "GLB Binary (.glb)"),
             ('GLTF', "GLTF compatible with 2.8+", "GLTF Separate (.gltf + .bin + textures)"),
-            ('OBJ', "OBJ compatible with 4.0+", "Wavefront OBJ (.obj)"),
+            ('OBJ', "OBJ compatible with 2.8+", "Wavefront OBJ (.obj)"),
             ('FBX', "FBX compatible with 2.8+", "FBX (.fbx)"),
         ],
         default='GLB',
