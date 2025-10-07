@@ -135,8 +135,9 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
         quick_box = layout.box()
         
         # Export destination
-        row = quick_box.row(align=True)
+        row = quick_box.row()
         row.label(text="Export To:", icon='EXPORT')
+        row = quick_box.row()
         row.prop(scene_props, "export_path", text="")
         
         if not scene_props.export_path:
