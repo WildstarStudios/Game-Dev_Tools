@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Advanced Auto-Exporter",
     "author": "WildStar Studios", 
-    "version": (2, 3, 0),
+    "version": (2, 3, 1),
     "blender": (4, 5, 0),
     "location": "View3D > Sidebar > Export",
     "description": "Advanced export with proper collection origin handling",
