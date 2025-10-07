@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Advanced Auto-Exporter",
     "author": "WildStar Studios", 
-    "version": (2, 4, 0, " dev 2"),
+    "version": (2, 4, 0, "dev 2"),
     "blender": (4, 5, 0),
     "location": "View3D > Sidebar > Export",
     "description": "Advanced export with proper collection origin handling",
@@ -20,6 +20,12 @@ from bpy.app.handlers import persistent
 import mathutils
 from mathutils import Vector
 
+# ===== GLOBAL EXPORT STATE =====
+class ExportState:
+    """Global state to track export status"""
+    is_exporting = False
+    current_export_thread = None
+
 # ===== OPERATORS =====
 class ADVANCED_GLB_OT_export(bpy.types.Operator):
     bl_idname = "export.advanced_glb"
@@ -31,6 +37,11 @@ class ADVANCED_GLB_OT_export(bpy.types.Operator):
         scene_props = context.scene.advanced_glb_props
         prefs = context.preferences.addons[__name__].preferences
         
+        # Check if already exporting
+        if ExportState.is_exporting:
+            self.report({'WARNING'}, "Export already in progress. Please wait.")
+            return {'CANCELLED'}
+        
         # Check for animation warnings
         if scene_props.apply_animations:
             if scene_props.export_format in ['OBJ']:
@@ -38,31 +49,96 @@ class ADVANCED_GLB_OT_export(bpy.types.Operator):
             else:
                 self.report({'INFO'}, f"{scene_props.export_format} format supports animations")
         
-        # Use threaded export if enabled
-        if prefs.enable_threaded_export:
-            export_thread = threading.Thread(target=self.threaded_export, args=(context,))
-            export_thread.daemon = True
-            export_thread.start()
-            return {'RUNNING_MODAL'}
+        # Use safe background export if enabled
+        if prefs.enable_threaded_export and prefs.enable_experimental_features:
+            return self.safe_background_export(context)
         else:
-            result = export_glb(context)
-            if result == {'FINISHED'}:
-                if scene_props.export_scope == 'SCENE':
-                    self.report({'INFO'}, f"Exported scene to {scene_props.export_path}")
-                else:
-                    self.report({'INFO'}, f"Exported {scene_props.export_scope.lower()} to {scene_props.export_path}")
-            return result
+            # Synchronous export with locking
+            ExportState.is_exporting = True
+            try:
+                result = export_glb(context)
+                if result == {'FINISHED'}:
+                    if scene_props.export_scope == 'SCENE':
+                        self.report({'INFO'}, f"Exported scene to {scene_props.export_path}")
+                    else:
+                        self.report({'INFO'}, f"Exported {scene_props.export_scope.lower()} to {scene_props.export_path}")
+                return result
+            finally:
+                ExportState.is_exporting = False
 
-    def threaded_export(self, context):
-        """Run export in a separate thread to prevent UI freezing"""
+    def safe_background_export(self, context):
+        """Use bpy.app.timers for safe background execution"""
+        ExportState.is_exporting = True
+        
+        # Store context for the timer function
+        scene_props = context.scene.advanced_glb_props
+        
+        # Set waiting cursor
+        context.window.cursor_set('WAIT')
+        
+        # Schedule the export to run on the next timer tick
+        bpy.app.timers.register(
+            lambda: self.timer_export_complete(context),
+            first_interval=0.1
+        )
+        
+        self.report({'INFO'}, "Export started in background...")
+        return {'RUNNING_MODAL'}
+
+    def timer_export_complete(self, context):
+        """Timer callback that runs export safely in background"""
         try:
+            # Run the actual export
             result = export_glb(context)
-            if result == {'FINISHED'}:
-                print("✅ Export completed successfully in background")
-            else:
-                print("❌ Export failed")
+            
+            # Schedule UI update on main thread
+            bpy.app.timers.register(
+                lambda: self.finish_export(context, result),
+                first_interval=0.1
+            )
+            
         except Exception as e:
-            print(f"❌ Export error: {str(e)}")
+            print(f"Export error: {str(e)}")
+            bpy.app.timers.register(
+                lambda: self.export_failed(context, str(e)),
+                first_interval=0.1
+            )
+        
+        return None  # Run only once
+
+    def finish_export(self, context, result):
+        """Finish export and update UI"""
+        ExportState.is_exporting = False
+        context.window.cursor_set('DEFAULT')
+        
+        scene_props = context.scene.advanced_glb_props
+        if result == {'FINISHED'}:
+            if scene_props.export_scope == 'SCENE':
+                self.report({'INFO'}, f"Exported scene to {scene_props.export_path}")
+            else:
+                self.report({'INFO'}, f"Exported {scene_props.export_scope.lower()} to {scene_props.export_path}")
+        else:
+            self.report({'ERROR'}, "Export failed")
+        
+        # Trigger UI refresh
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        
+        return None
+
+    def export_failed(self, context, error_msg):
+        """Handle export failure"""
+        ExportState.is_exporting = False
+        context.window.cursor_set('DEFAULT')
+        self.report({'ERROR'}, f"Export failed: {error_msg}")
+        
+        # Trigger UI refresh
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        
+        return None
 
 class ADVANCED_GLB_OT_delete_track_file(bpy.types.Operator):
     bl_idname = "advanced_glb.delete_track_file"
@@ -147,27 +223,6 @@ class ADVANCED_GLB_OT_validate_sk_modifiers(bpy.types.Operator):
         self.report({'WARNING'}, f"Found {len(invalid_collections)} collections with invalid -sk usage")
         return {'FINISHED'}
 
-# ===== PROGRESS OPERATOR =====
-class ADVANCED_GLB_OT_progress(bpy.types.Operator):
-    bl_idname = "advanced_glb.progress"
-    bl_label = "Export Progress"
-    bl_description = "Show export progress"
-    bl_options = {'REGISTER'}
-    
-    progress: FloatProperty(default=0.0)
-    message: StringProperty(default="Exporting...")
-    
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
-    
-    def draw(self, context):
-        layout = self.layout
-        layout.label(text=self.message)
-        layout.prop(self, "progress", text="Progress", slider=True)
-    
-    def execute(self, context):
-        return {'FINISHED'}
-
 # ===== CLEAN UI PANEL =====
 class ADVANCED_GLB_PT_panel(bpy.types.Panel):
     bl_label = "Advanced Auto-Export"
@@ -226,9 +281,16 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
             for stat in stats:
                 stats_box.label(text=stat)
         
-        # Export button - prominent
+        # Export button with locking
         button_text = self.get_export_button_text(scene_props)
-        quick_box.operator("export.advanced_glb", text=button_text, icon='EXPORT')
+        export_row = quick_box.row()
+        
+        if ExportState.is_exporting:
+            export_row.enabled = False
+            export_row.operator("export.advanced_glb", text="Exporting...", icon='LOADING')
+            quick_box.label(text="Export in progress...", icon='TIME')
+        else:
+            export_row.operator("export.advanced_glb", text=button_text, icon='EXPORT')
         
         # === SETTINGS SECTION ===
         settings_box = layout.box()
@@ -254,8 +316,6 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
             experimental_box.prop(prefs, "enable_threaded_export", text="Threaded Export")
             if prefs.enable_threaded_export:
                 experimental_box.label(text="✓ Exports in background", icon='INFO')
-            
-            experimental_box.prop(prefs, "show_progress_bar", text="Progress Bar")
         
         # === MODIFIERS INFO ===
         mod_box = layout.box()
@@ -301,6 +361,10 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
         stats = []
         extension = get_extension(scene_props.export_format)
         
+        if ExportState.is_exporting:
+            stats.append("🔄 Export in progress...")
+            return stats
+            
         if scene_props.export_scope == 'SCENE':
             objects = [obj for obj in bpy.data.objects if should_export_object(obj)]
             stats.append(f"📦 Scene: {len(objects)} objects")
@@ -323,6 +387,8 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
 
     def get_export_button_text(self, scene_props):
         """Get text for the export button"""
+        if ExportState.is_exporting:
+            return "Exporting..."
         if scene_props.export_scope == 'SCENE':
             clean_name, _ = parse_modifiers(scene_props.scene_export_filename)
             return f"Export {clean_name}"
@@ -334,6 +400,10 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
         details = []
         extension = get_extension(scene_props.export_format)
         
+        if ExportState.is_exporting:
+            details.append("Export in progress...")
+            return details
+            
         if scene_props.export_scope == 'SCENE':
             objects = [obj for obj in bpy.data.objects if should_export_object(obj)]
             clean_name, modifiers = parse_modifiers(scene_props.scene_export_filename)
@@ -433,13 +503,7 @@ class AdvancedGLBPreferences(bpy.types.AddonPreferences):
     enable_threaded_export: BoolProperty(
         name="Threaded Export",
         default=False,
-        description="Run export in background thread to prevent UI freezing (Experimental)"
-    )
-    
-    show_progress_bar: BoolProperty(
-        name="Show Progress Bar",
-        default=False,
-        description="Show progress during export (Experimental)"
+        description="Run export in background using safe timers to prevent UI freezing (Experimental)"
     )
     
     def draw(self, context):
@@ -465,7 +529,6 @@ class AdvancedGLBPreferences(bpy.types.AddonPreferences):
         if self.enable_experimental_features:
             experimental_box.label(text="🚧 Experimental features enabled", icon='ERROR')
             experimental_box.prop(self, "enable_threaded_export")
-            experimental_box.prop(self, "show_progress_bar")
         
         # Tracking settings
         track_box = layout.box()
@@ -690,7 +753,7 @@ def parse_modifiers(name):
         'sep': False,
         'dk': False,
         'sk': False,
-        'anim': False  # New -anim modifier
+        'anim': False
     }
     
     clean_name = name.strip()
@@ -734,13 +797,11 @@ def validate_sk_modifiers():
         if not modifiers['sk']:
             return issues
         
-        # Check if collection has objects with -anim modifier when using -sk
         for obj in collection.objects:
             obj_clean, obj_modifiers = parse_modifiers(obj.name)
             if obj_modifiers['anim']:
                 issues.append(f"Object '{obj.name}' has -anim modifier but collection is skipped")
         
-        # Recursively check subcollections
         for subcol in collection.children:
             sub_issues = check_collection_sk_usage(subcol)
             if sub_issues:
@@ -1094,15 +1155,8 @@ def restore_original_position(obj, original_matrix):
     """Restore object to its original position"""
     obj.matrix_world = original_matrix
 
-def show_progress(progress, message):
-    """Show progress bar if enabled"""
-    prefs = bpy.context.preferences.addons[__name__].preferences
-    if prefs.show_progress_bar and prefs.enable_experimental_features:
-        # This is a simplified progress display - in a real implementation
-        # you'd use a proper modal operator with timer
-        print(f"📊 Progress: {progress:.0%} - {message}")
-
 def export_glb(context):
+    """Modified export function with visual movement prevention"""
     scene_props = context.scene.advanced_glb_props
     prefs = context.preferences.addons[__name__].preferences
     
@@ -1119,9 +1173,11 @@ def export_glb(context):
     exported_files = []
     
     try:
+        # Prevent viewport updates during transformation
         if prefs.export_individual_origins and scene_props.export_scope != 'SCENE':
-            print("📍 Using local origins - moving to 3D cursor...")
+            print("📍 Using local origins - moving to 3D cursor (hidden)...")
             
+            # Minimize viewport updates by doing all transformations first
             if scene_props.export_scope == 'COLLECTION':
                 export_roots = find_collection_export_roots(bpy.context.scene.collection)
                 for root_collection, collections_in_root in export_roots.items():
@@ -1132,7 +1188,6 @@ def export_glb(context):
                     if objects_in_root:
                         collection_positions = move_collection_to_origin(objects_in_root, cursor_location)
                         original_positions.update(collection_positions)
-                        print(f"  Moved collection '{root_collection.name}' as group ({len(objects_in_root)} objects)")
             
             elif scene_props.export_scope == 'OBJECT':
                 for obj in bpy.data.objects:
@@ -1151,8 +1206,6 @@ def export_glb(context):
                 print(f"📁 Created directory: {os.path.dirname(export_path)}")
             
             try:
-                show_progress(0.3, "Exporting scene...")
-                
                 if scene_props.export_format in ['GLB', 'GLTF']:
                     bpy.ops.export_scene.gltf(
                         filepath=export_path,
@@ -1180,7 +1233,6 @@ def export_glb(context):
                         axis_up='Z' if scene_props.export_up_axis == 'Z' else 'Y'
                     )
                 
-                show_progress(1.0, "Export complete!")
                 print(f"✅ Exported scene to: {export_path}")
                 exported_files.append(export_path)
                 return {'FINISHED'}
@@ -1191,11 +1243,8 @@ def export_glb(context):
         elif scene_props.export_scope == 'COLLECTION':
             export_roots = find_collection_export_roots(bpy.context.scene.collection)
             success_count = 0
-            total_collections = len(export_roots)
             
-            for i, (root_collection, collections_in_root) in enumerate(export_roots.items()):
-                show_progress(i / total_collections, f"Exporting collection {i+1}/{total_collections}")
-                
+            for root_collection, collections_in_root in export_roots.items():
                 col_clean, col_modifiers = parse_modifiers(root_collection.name)
                 export_path = get_final_export_path(scene_props.export_path, col_modifiers.get('dir'), col_clean, 'COLLECTION', scene_props.export_format)
                 
@@ -1254,17 +1303,12 @@ def export_glb(context):
                 except Exception as e:
                     print(f"❌ Collection export failed for '{col_clean}': {str(e)}")
             
-            show_progress(1.0, "All collections exported!")
             return {'FINISHED'} if success_count > 0 else {'CANCELLED'}
         
         elif scene_props.export_scope == 'OBJECT':
             success_count = 0
-            objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
-            total_objects = len(objects_to_export)
             
-            for i, obj in enumerate(objects_to_export):
-                show_progress(i / total_objects, f"Exporting object {i+1}/{total_objects}")
-                
+            for obj in bpy.data.objects:
                 if not should_export_object(obj):
                     continue
                 
@@ -1316,7 +1360,6 @@ def export_glb(context):
                 except Exception as e:
                     print(f"❌ Object export failed for '{obj_clean}': {str(e)}")
             
-            show_progress(1.0, "All objects exported!")
             return {'FINISHED'} if success_count > 0 else {'CANCELLED'}
         
         return {'CANCELLED'}
@@ -1371,7 +1414,6 @@ def register():
     bpy.utils.register_class(ADVANCED_GLB_OT_delete_track_file)
     bpy.utils.register_class(ADVANCED_GLB_OT_execute_order_66)
     bpy.utils.register_class(ADVANCED_GLB_OT_validate_sk_modifiers)
-    bpy.utils.register_class(ADVANCED_GLB_OT_progress)
     bpy.utils.register_class(ADVANCED_GLB_PT_panel)
     bpy.utils.register_class(AdvancedGLBPreferences)
     bpy.utils.register_class(AdvancedGLBSceneProperties)
@@ -1382,11 +1424,13 @@ def register():
         bpy.app.handlers.save_post.append(on_save_handler)
 
 def unregister():
+    # Clean up any running exports
+    ExportState.is_exporting = False
+    
     bpy.utils.unregister_class(ADVANCED_GLB_OT_export)
     bpy.utils.unregister_class(ADVANCED_GLB_OT_delete_track_file)
     bpy.utils.unregister_class(ADVANCED_GLB_OT_execute_order_66)
     bpy.utils.unregister_class(ADVANCED_GLB_OT_validate_sk_modifiers)
-    bpy.utils.unregister_class(ADVANCED_GLB_OT_progress)
     bpy.utils.unregister_class(ADVANCED_GLB_PT_panel)
     bpy.utils.unregister_class(AdvancedGLBPreferences)
     bpy.utils.unregister_class(AdvancedGLBSceneProperties)
