@@ -302,8 +302,8 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
         grid.prop(prefs, "export_individual_origins", text="Local Origins")
         grid.prop(prefs, "apply_modifiers", text="Apply Modifiers")
         grid.prop(scene_props, "auto_export_on_save", text="Auto-Export")
-        grid.prop(prefs, "show_detailed_list", text="Show Details")
         grid.prop(scene_props, "apply_animations", text="Apply Animations")
+        grid.prop(prefs, "show_detailed_list", text="Show Details")
         
         if prefs.show_detailed_list:
             grid.prop(prefs, "show_hidden_objects", text="Show Hidden")
