@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Advanced Auto-Exporter",
     "author": "WildStar Studios", 
-    "version": (2, 3, 0),
+    "version": (2, 3, 1),
     "blender": (4, 5, 0),
     "location": "View3D > Sidebar > Export",
     "description": "Advanced export with proper collection origin handling",
@@ -308,7 +308,7 @@ class AdvancedGLBPreferences(bpy.types.AddonPreferences):
     
     apply_modifiers: BoolProperty(
         name="Apply Modifiers",
-        default=False,
+        default=True,
         description="Apply modifiers before export"
     )
     
@@ -327,7 +327,7 @@ class AdvancedGLBPreferences(bpy.types.AddonPreferences):
     # Tracking settings
     enable_export_tracking: BoolProperty(
         name="Enable Export Tracking",
-        default=False,
+        default=True,
         description="Track exported files to identify orphans. Uses .track files"
     )
     
@@ -411,9 +411,9 @@ class AdvancedGLBSceneProperties(bpy.types.PropertyGroup):
     export_format: EnumProperty(
         name="Export Format",
         items=[
-            ('GLB', "GLB compatible with 2.8", "GLB Binary (.glb)"),
+            ('GLB', "GLB compatible with 2.8+", "GLB Binary (.glb)"),
             ('GLTF', "GLTF compatible with 2.8+", "GLTF Separate (.gltf + .bin + textures)"),
-            ('OBJ', "OBJ tested with 4.0+", "Wavefront OBJ (.obj)"),
+            ('OBJ', "OBJ compatible with 2.8+", "Wavefront OBJ (.obj)"),
             ('FBX', "FBX compatible with 2.8+", "FBX (.fbx)"),
         ],
         default='GLB',
