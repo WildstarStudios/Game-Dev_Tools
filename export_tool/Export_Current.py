@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Advanced GLB Auto-Exporter (Experimental)",
     "author": "WildStar Studios",
-    "version": (2, 3, "beta 1"),
+    "version": (2, 3, "beta 2"),
     "blender": (4, 4, 0),
     "location": "View3D > Sidebar > GLB Export",
     "description": "EXPERIMENTAL: Advanced GLB export with proper collection origin handling - USE WITH CAUTION",
@@ -1128,4 +1128,5 @@ def unregister():
         bpy.app.handlers.save_post.remove(on_save_handler)
 
 if __name__ == "__main__":
+
     register()
