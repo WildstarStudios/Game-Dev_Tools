@@ -1,16 +1,18 @@
 bl_info = {
     "name": "Advanced GLB Auto-Exporter",
     "author": "WildStar Studios",
-    "version": (2, 1),
+    "version": (2, 2),
     "blender": (4, 4, 0),
     "location": "View3D > Sidebar > GLB Export",
-    "description": "Advanced GLB export with directory modifiers and origin handling",
+    "description": "Advanced GLB export with tracking and cleanup system",
     "category": "Import-Export",
 }
 
 import bpy
 import os
 import re
+import json
+import datetime
 from bpy.props import StringProperty, BoolProperty, EnumProperty
 from bpy.app.handlers import persistent
 import mathutils
@@ -30,6 +32,61 @@ class ADVANCED_GLB_OT_export(bpy.types.Operator):
             else:
                 self.report({'INFO'}, f"Exported {scene_props.export_scope.lower()} to {scene_props.export_path}")
         return result
+
+class ADVANCED_GLB_OT_delete_track_file(bpy.types.Operator):
+    bl_idname = "advanced_glb.delete_track_file"
+    bl_label = "Delete Track File"
+    bl_description = "Delete the export tracking file for this blend file"
+    bl_options = {'REGISTER'}
+    
+    def execute(self, context):
+        track_file_path = get_track_file_path()
+        if os.path.exists(track_file_path):
+            os.remove(track_file_path)
+            self.report({'INFO'}, f"Deleted track file: {os.path.basename(track_file_path)}")
+        else:
+            self.report({'WARNING'}, "No track file found")
+        return {'FINISHED'}
+
+class ADVANCED_GLB_OT_execute_order_66(bpy.types.Operator):
+    bl_idname = "advanced_glb.execute_order_66"
+    bl_label = "Execute Order 66"
+    bl_description = "Delete orphaned GLB files based on tracking data"
+    bl_options = {'REGISTER'}
+    
+    confirm: BoolProperty(default=False)
+    
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+    
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="This will delete orphaned GLB files.", icon='ERROR')
+        layout.label(text="This action cannot be undone!")
+        
+        # Show what will be deleted
+        orphans = find_orphaned_files()
+        if orphans:
+            layout.label(text="Files to be deleted:")
+            box = layout.box()
+            for orphan in orphans[:10]:  # Show first 10
+                box.label(text=f"• {os.path.basename(orphan)}")
+            if len(orphans) > 10:
+                box.label(text=f"... and {len(orphans) - 10} more")
+        else:
+            layout.label(text="No orphaned files found.", icon='INFO')
+    
+    def execute(self, context):
+        if not self.confirm:
+            self.report({'WARNING'}, "Operation cancelled")
+            return {'CANCELLED'}
+            
+        deleted_files = cleanup_orphaned_files()
+        if deleted_files:
+            self.report({'INFO'}, f"Executed Order 66: Deleted {len(deleted_files)} orphaned files")
+        else:
+            self.report({'INFO'}, "No orphaned files found to delete")
+        return {'FINISHED'}
 
 class ADVANCED_GLB_PT_panel(bpy.types.Panel):
     bl_label = "GLB Auto-Export"
@@ -62,11 +119,11 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
         if scene_props.export_scope == 'SCENE':
             essential_box.prop(scene_props, "scene_export_filename", text="Filename")
             if scene_props.export_path:
-                clean_name, modifiers = parse_modifiers(scene_props.scene_export_filename)
-                final_path = get_final_export_path(scene_props.export_path, modifiers.get('dir'), clean_name, 'SCENE')
+                scene_clean, scene_modifiers = parse_modifiers(scene_props.scene_export_filename)
+                final_path = get_final_export_path(scene_props.export_path, scene_modifiers.get('dir'), scene_clean, 'SCENE')
                 essential_box.label(text=f"→ {os.path.basename(final_path)}", icon='FILE_BLEND')
-                if modifiers.get('dir'):
-                    essential_box.label(text=f"📁 Directory: {modifiers['dir']}", icon='FILE_FOLDER')
+                if scene_modifiers.get('dir'):
+                    essential_box.label(text=f"📁 Directory: {scene_modifiers['dir']}", icon='FILE_FOLDER')
         
         elif scene_props.export_scope == 'COLLECTION':
             if scene_props.export_path:
@@ -189,6 +246,42 @@ class AdvancedGLBPreferences(bpy.types.AddonPreferences):
         default=False,
         description="Include hidden objects in the detailed list"
     )
+    
+    # Experimental tracking settings
+    enable_export_tracking: BoolProperty(
+        name="Enable Export Tracking (Experimental)",
+        default=False,
+        description="Track exported files to identify orphans. Uses .track files"
+    )
+    
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="GLB Export Settings")
+        
+        # Main settings
+        layout.prop(self, "export_individual_origins")
+        layout.prop(self, "apply_modifiers")
+        layout.prop(self, "show_detailed_list")
+        layout.prop(self, "show_hidden_objects")
+        layout.prop(self, "show_advanced_settings")
+        
+        # Experimental tracking section
+        layout.separator()
+        box = layout.box()
+        box.label(text="Experimental Tracking System", icon='EXPERIMENTAL')
+        box.prop(self, "enable_export_tracking")
+        
+        if self.enable_export_tracking:
+            box.label(text="Tracks exported files to identify orphans", icon='INFO')
+            box.label(text="Creates .track files in export directories", icon='FILE_HIDDEN')
+            
+            # Track file management buttons
+            row = box.row()
+            row.operator("advanced_glb.delete_track_file", icon='TRASH')
+            
+            row = box.row()
+            op = row.operator("advanced_glb.execute_order_66", icon='COMMUNITY')
+            op.confirm = True
 
 class AdvancedGLBSceneProperties(bpy.types.PropertyGroup):
     export_path: StringProperty(
@@ -220,6 +313,136 @@ class AdvancedGLBSceneProperties(bpy.types.PropertyGroup):
         default="scene",
         description="Filename for scene export (without .glb extension)"
     )
+
+# ===== TRACKING SYSTEM =====
+
+def get_track_file_path():
+    """Get the path for the track file based on blend file name"""
+    if bpy.data.filepath:
+        blend_name = os.path.splitext(os.path.basename(bpy.data.filepath))[0]
+        return os.path.join(os.path.dirname(bpy.data.filepath), f"{blend_name}.export.track")
+    else:
+        return os.path.join(os.path.expanduser("~"), "unsaved_export.track")
+
+def load_track_data():
+    """Load tracking data from track file"""
+    track_file = get_track_file_path()
+    if os.path.exists(track_file):
+        try:
+            with open(track_file, 'r') as f:
+                return json.load(f)
+        except:
+            return {}
+    return {}
+
+def save_track_data(track_data):
+    """Save tracking data to track file"""
+    track_file = get_track_file_path()
+    try:
+        with open(track_file, 'w') as f:
+            json.dump(track_data, f, indent=2)
+        return True
+    except:
+        return False
+
+def update_track_file(exported_files, export_path):
+    """Update track file with current export information"""
+    prefs = bpy.context.preferences.addons[__name__].preferences
+    if not prefs.enable_export_tracking:
+        return
+    
+    track_data = load_track_data()
+    
+    # Initialize export path data if not exists
+    if export_path not in track_data:
+        track_data[export_path] = {}
+    
+    # Update with current export
+    track_data[export_path]['last_export'] = {
+        'timestamp': datetime.datetime.now().isoformat(),
+        'files': exported_files,
+        'blend_file': bpy.data.filepath or "unsaved"
+    }
+    
+    # Keep history of last 10 exports for this path
+    if 'history' not in track_data[export_path]:
+        track_data[export_path]['history'] = []
+    
+    track_data[export_path]['history'].append({
+        'timestamp': datetime.datetime.now().isoformat(),
+        'files': exported_files
+    })
+    
+    # Keep only last 10 history entries
+    track_data[export_path]['history'] = track_data[export_path]['history'][-10:]
+    
+    save_track_data(track_data)
+
+def find_orphaned_files():
+    """Find orphaned GLB files based on tracking data"""
+    track_data = load_track_data()
+    orphans = []
+    
+    for export_path, path_data in track_data.items():
+        if not os.path.exists(export_path):
+            continue
+            
+        if 'last_export' not in path_data:
+            continue
+        
+        # Get files that were exported in the last export
+        last_export_files = set(path_data['last_export']['files'])
+        
+        # Find all GLB files in the export directory and subdirectories
+        current_files = set()
+        for root, dirs, files in os.walk(export_path):
+            for file in files:
+                if file.lower().endswith('.glb'):
+                    full_path = os.path.join(root, file)
+                    current_files.add(full_path)
+        
+        # Orphans are files that exist but weren't in the last export
+        for file_path in current_files:
+            if file_path not in last_export_files:
+                orphans.append(file_path)
+    
+    return orphans
+
+def cleanup_orphaned_files():
+    """Delete orphaned GLB files and update track file"""
+    orphans = find_orphaned_files()
+    deleted_files = []
+    
+    for orphan in orphans:
+        try:
+            os.remove(orphan)
+            deleted_files.append(orphan)
+            print(f"🗑️ Deleted orphaned file: {orphan}")
+        except Exception as e:
+            print(f"❌ Failed to delete {orphan}: {str(e)}")
+    
+    # Update track file to remove references to deleted files
+    track_data = load_track_data()
+    for export_path, path_data in track_data.items():
+        if 'last_export' in path_data:
+            # Remove deleted files from last_export record
+            path_data['last_export']['files'] = [
+                f for f in path_data['last_export']['files'] 
+                if f not in deleted_files and os.path.exists(f)
+            ]
+        
+        if 'history' in path_data:
+            # Clean up history entries too
+            for history_entry in path_data['history']:
+                history_entry['files'] = [
+                    f for f in history_entry['files']
+                    if f not in deleted_files and os.path.exists(f)
+                ]
+    
+    save_track_data(track_data)
+    return deleted_files
+
+# ===== EXISTING FUNCTIONS (from previous code) =====
 
 def parse_modifiers(name):
     """Parse modifiers from name and return clean name + modifiers dict"""
@@ -264,8 +487,8 @@ def ensure_directory_exists(filepath):
     directory = os.path.dirname(filepath)
     if directory and not os.path.exists(directory):
         os.makedirs(directory, exist_ok=True)
-        return True  # Directory was created
-    return False  # Directory already existed
+        return True
+    return False
 
 def get_collection_for_object(obj):
     """Get the first collection that contains the object (for directory resolution)"""
@@ -279,7 +502,6 @@ def resolve_export_directory(obj, collection, export_scope, base_export_path):
     obj_clean, obj_modifiers = parse_modifiers(obj.name)
     
     if export_scope == 'SCENE':
-        # Scene scope: only use scene filename modifiers
         scene_props = bpy.context.scene.advanced_glb_props
         scene_clean, scene_modifiers = parse_modifiers(scene_props.scene_export_filename)
         dir_path = scene_modifiers.get('dir')
@@ -288,7 +510,6 @@ def resolve_export_directory(obj, collection, export_scope, base_export_path):
         return base_export_path
     
     elif export_scope == 'COLLECTION':
-        # Collection scope: only use collection modifiers
         if collection:
             col_clean, col_modifiers = parse_modifiers(collection.name)
             dir_path = col_modifiers.get('dir')
@@ -297,14 +518,12 @@ def resolve_export_directory(obj, collection, export_scope, base_export_path):
         return base_export_path
     
     elif export_scope == 'OBJECT':
-        # Object scope: collection modifiers take priority over object modifiers
         if collection:
             col_clean, col_modifiers = parse_modifiers(collection.name)
             dir_path = col_modifiers.get('dir')
             if dir_path:
                 return os.path.join(base_export_path, dir_path)
         
-        # If collection has no -dir:, use object's -dir:
         dir_path = obj_modifiers.get('dir')
         if dir_path:
             return os.path.join(base_export_path, dir_path)
@@ -316,12 +535,10 @@ def resolve_export_directory(obj, collection, export_scope, base_export_path):
 def get_quick_summary(scene_props, prefs):
     """Generate quick summary of what will be exported"""
     summary_lines = []
-    created_dirs = set()
     
     if scene_props.export_scope == 'SCENE':
         objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
         scene_clean, scene_modifiers = parse_modifiers(scene_props.scene_export_filename)
-        final_path = get_final_export_path(scene_props.export_path, scene_modifiers.get('dir'), scene_clean, 'SCENE')
         
         summary_lines.append(f"📦 Exporting {len(objects_to_export)} objects as single file")
         if scene_modifiers.get('dir'):
@@ -338,7 +555,6 @@ def get_quick_summary(scene_props, prefs):
         summary_lines.append(f"📦 Exporting {len(export_roots)} collections")
         summary_lines.append(f"📊 Total objects: {object_count}")
         
-        # Show directory usage
         dir_collections = []
         for root_col, collections_in_root in export_roots.items():
             col_clean, col_modifiers = parse_modifiers(root_col.name)
@@ -347,7 +563,7 @@ def get_quick_summary(scene_props, prefs):
         
         if dir_collections:
             summary_lines.append("📁 Directories:")
-            for dir_info in dir_collections[:3]:  # Show first 3
+            for dir_info in dir_collections[:3]:
                 summary_lines.append(f"  {dir_info}")
             if len(dir_collections) > 3:
                 summary_lines.append(f"  ... and {len(dir_collections) - 3} more")
@@ -359,9 +575,8 @@ def get_quick_summary(scene_props, prefs):
         objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
         summary_lines.append(f"📦 Exporting {len(objects_to_export)} objects")
         
-        # Show directory usage
         dir_objects = []
-        for obj in objects_to_export[:5]:  # Check first 5 objects
+        for obj in objects_to_export[:5]:
             collection = get_collection_for_object(obj)
             export_dir = resolve_export_directory(obj, collection, 'OBJECT', scene_props.export_path)
             if export_dir != scene_props.export_path:
@@ -388,7 +603,6 @@ def get_detailed_summary(scene_props, prefs):
     if scene_props.export_scope == 'SCENE':
         objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
         scene_clean, scene_modifiers = parse_modifiers(scene_props.scene_export_filename)
-        final_path = get_final_export_path(scene_props.export_path, scene_modifiers.get('dir'), scene_clean, 'SCENE')
         
         summary_lines.append(f"Scene Export: {len(objects_to_export)} objects")
         summary_lines.append(f"File: {scene_clean}.glb")
@@ -467,34 +681,27 @@ def find_collection_export_roots(scene_collection):
     
     def traverse_collections(collection, current_root=None):
         """Recursively traverse collections to find export roots"""
-        # Parse modifiers
         clean_name, modifiers = parse_modifiers(collection.name)
         
-        # Skip collections that shouldn't be exported (-dk collections)
         if modifiers['dk'] or not should_export_collection(collection):
             return
         
-        # If this collection has -sep, it becomes a new export root
         if modifiers['sep']:
             current_root = collection
             if collection not in export_roots:
                 export_roots[collection] = []
         
-        # If we don't have a current root yet, this collection becomes the root
         if current_root is None:
             current_root = collection
             if collection not in export_roots:
                 export_roots[collection] = []
         
-        # Add this collection to the current root
         if current_root is not None and collection not in export_roots[current_root]:
             export_roots[current_root].append(collection)
         
-        # Recursively traverse child collections
         for child_collection in collection.children:
             traverse_collections(child_collection, current_root)
     
-    # Start traversal from scene collection children
     for child_collection in scene_collection.children:
         traverse_collections(child_collection)
     
@@ -532,15 +739,12 @@ def should_export_object(obj):
     """Determine if an object should be exported"""
     clean_name, modifiers = parse_modifiers(obj.name)
     
-    # Skip objects with -dk modifier
     if modifiers['dk']:
         return False
     
-    # Skip hidden objects
     if obj.hide_viewport or obj.hide_render:
         return False
     
-    # Skip non-exportable types
     if obj.type not in {'MESH', 'CURVE', 'SURFACE', 'META', 'FONT', 'ARMATURE'}:
         return False
     
@@ -550,11 +754,9 @@ def should_export_collection(col):
     """Determine if a collection should be exported"""
     clean_name, modifiers = parse_modifiers(col.name)
     
-    # Skip collections with -dk modifier
     if modifiers['dk']:
         return False
     
-    # Skip hidden collections
     if col.hide_viewport or col.hide_render:
         return False
     
@@ -562,13 +764,8 @@ def should_export_collection(col):
 
 def move_to_3d_cursor(obj, cursor_location):
     """Move object to 3D cursor while preserving its local transform"""
-    # Store the object's current world matrix
     world_matrix = obj.matrix_world.copy()
-    
-    # Calculate the offset from object's origin to 3D cursor
     offset = cursor_location - world_matrix.to_translation()
-    
-    # Apply the offset to the object's location
     obj.location = obj.location + offset
 
 def restore_original_position(obj, original_matrix):
@@ -579,64 +776,52 @@ def export_glb(context):
     scene_props = context.scene.advanced_glb_props
     prefs = context.preferences.addons[__name__].preferences
     
-    # Check if export path is set
     if not scene_props.export_path:
         print("Export failed: No export directory specified")
         return {'CANCELLED'}
     
-    # Ensure base directory exists
     if not os.path.exists(scene_props.export_path):
         os.makedirs(scene_props.export_path, exist_ok=True)
     
-    # Store original positions for restoration
     original_positions = {}
     cursor_location = bpy.context.scene.cursor.location.copy()
     created_directories = set()
+    exported_files = []  # Track all files we export in this session
     
     try:
-        # Handle individual origins if requested (disabled for scene export)
         if prefs.export_individual_origins and scene_props.export_scope != 'SCENE':
             print("📍 Using local origins - moving objects to 3D cursor...")
             
             if scene_props.export_scope == 'COLLECTION':
-                # Move each collection's objects as a group to maintain relative positions
                 export_roots = find_collection_export_roots(bpy.context.scene.collection)
                 for root_collection, collections_in_root in export_roots.items():
-                    # Find all objects in this export root
                     objects_in_root = []
                     for col in collections_in_root:
                         objects_in_root.extend([obj for obj in col.all_objects if should_export_object(obj)])
                     
                     if objects_in_root:
-                        # Store original positions
                         for obj in objects_in_root:
                             original_positions[obj] = obj.matrix_world.copy()
                         
-                        # Move entire group to 3D cursor
                         for obj in objects_in_root:
                             move_to_3d_cursor(obj, cursor_location)
             
             elif scene_props.export_scope == 'OBJECT':
-                # Move each object individually to 3D cursor
                 for obj in bpy.data.objects:
                     if should_export_object(obj):
                         original_positions[obj] = obj.matrix_world.copy()
                         move_to_3d_cursor(obj, cursor_location)
         
-        # Set common export settings
         export_settings = {
             'export_format': 'GLB',
             'export_apply': prefs.apply_modifiers,
             'export_yup': True
         }
         
-        # Handle export scope
         if scene_props.export_scope == 'SCENE':
-            # Parse scene filename modifiers
             scene_clean, scene_modifiers = parse_modifiers(scene_props.scene_export_filename)
             export_path = get_final_export_path(scene_props.export_path, scene_modifiers.get('dir'), scene_clean, 'SCENE')
             
-            # Create directory if needed
             if ensure_directory_exists(export_path):
                 print(f"📁 Created directory: {os.path.dirname(export_path)}")
             
@@ -644,7 +829,6 @@ def export_glb(context):
             export_settings['use_selection'] = False
             
             try:
-                # Deselect all, then select exportable objects
                 bpy.ops.object.select_all(action='DESELECT')
                 for obj in bpy.data.objects:
                     if should_export_object(obj):
@@ -654,31 +838,27 @@ def export_glb(context):
                 print(f"✅ Exported scene to: {export_path}")
                 if scene_modifiers.get('dir'):
                     print(f"📁 Directory modifier: {scene_modifiers['dir']}")
+                
+                exported_files.append(export_path)
                 return {'FINISHED'}
             except Exception as e:
                 print(f"❌ Scene export failed: {str(e)}")
                 return {'CANCELLED'}
         
         elif scene_props.export_scope == 'COLLECTION':
-            # Export each collection export root individually
             export_roots = find_collection_export_roots(bpy.context.scene.collection)
             success_count = 0
             
             for root_collection, collections_in_root in export_roots.items():
-                # Parse collection name and modifiers
                 col_clean, col_modifiers = parse_modifiers(root_collection.name)
-                
-                # Build export path with directory modifier
                 export_path = get_final_export_path(scene_props.export_path, col_modifiers.get('dir'), col_clean, 'COLLECTION')
                 
-                # Create directory if needed
                 if ensure_directory_exists(export_path):
                     dir_created = os.path.dirname(export_path)
                     if dir_created not in created_directories:
                         print(f"📁 Created directory: {dir_created}")
                         created_directories.add(dir_created)
                 
-                # Select all objects from all collections in this export root
                 bpy.ops.object.select_all(action='DESELECT')
                 object_count = 0
                 
@@ -692,7 +872,6 @@ def export_glb(context):
                     print(f"⚠️ Skipping '{col_clean}': No exportable objects")
                     continue
                 
-                # Update export settings
                 root_settings = export_settings.copy()
                 root_settings['filepath'] = export_path
                 root_settings['use_selection'] = True
@@ -705,41 +884,34 @@ def export_glb(context):
                         print(f"📁 Directory modifier: {col_modifiers['dir']}")
                     print(f"   Contains {object_count} objects from: {collection_list}")
                     success_count += 1
+                    
+                    exported_files.append(export_path)
                 except Exception as e:
                     print(f"❌ Collection export failed for '{col_clean}': {str(e)}")
             
             return {'FINISHED'} if success_count > 0 else {'CANCELLED'}
         
         elif scene_props.export_scope == 'OBJECT':
-            # Export each object individually
             success_count = 0
             
             for obj in bpy.data.objects:
                 if not should_export_object(obj):
                     continue
                 
-                # Get collection for directory resolution
                 collection = get_collection_for_object(obj)
-                
-                # Parse object name and modifiers
                 obj_clean, obj_modifiers = parse_modifiers(obj.name)
-                
-                # Resolve export directory based on priority
                 export_dir = resolve_export_directory(obj, collection, 'OBJECT', scene_props.export_path)
                 export_path = os.path.join(export_dir, f"{obj_clean}.glb")
                 
-                # Create directory if needed
                 if ensure_directory_exists(export_path):
                     dir_created = os.path.dirname(export_path)
                     if dir_created not in created_directories:
                         print(f"📁 Created directory: {dir_created}")
                         created_directories.add(dir_created)
                 
-                # Select only this object
                 bpy.ops.object.select_all(action='DESELECT')
                 obj.select_set(True)
                 
-                # Update export settings
                 object_settings = export_settings.copy()
                 object_settings['filepath'] = export_path
                 object_settings['use_selection'] = True
@@ -748,7 +920,6 @@ def export_glb(context):
                     bpy.ops.export_scene.gltf(**object_settings)
                     print(f"✅ Exported '{obj_clean}' to: {export_path}")
                     
-                    # Show which directory modifier was used
                     if collection:
                         col_clean, col_modifiers = parse_modifiers(collection.name)
                         if col_modifiers.get('dir'):
@@ -757,6 +928,7 @@ def export_glb(context):
                             print(f"📁 Using object's directory: {obj_modifiers['dir']}")
                     
                     success_count += 1
+                    exported_files.append(export_path)
                 except Exception as e:
                     print(f"❌ Object export failed for '{obj_clean}': {str(e)}")
             
@@ -765,11 +937,15 @@ def export_glb(context):
         return {'CANCELLED'}
     
     finally:
-        # Always restore original positions if we moved objects
+        # Update tracking file if we exported anything
+        if exported_files and prefs.enable_export_tracking:
+            update_track_file(exported_files, scene_props.export_path)
+            print(f"📊 Tracking updated: {len(exported_files)} files recorded")
+        
         if original_positions:
             print("📍 Restoring original object positions...")
             for obj, original_matrix in original_positions.items():
-                if obj:  # Ensure object still exists
+                if obj:
                     restore_original_position(obj, original_matrix)
 
 @persistent
@@ -781,7 +957,6 @@ def on_save_handler(dummy):
     if not scene_props.auto_export_on_save:
         return
     
-    # Skip if export path isn't set
     if not scene_props.export_path:
         print("Auto-export skipped: Export directory not configured")
         return
@@ -790,30 +965,29 @@ def on_save_handler(dummy):
 
 def register():
     bpy.utils.register_class(ADVANCED_GLB_OT_export)
+    bpy.utils.register_class(ADVANCED_GLB_OT_delete_track_file)
+    bpy.utils.register_class(ADVANCED_GLB_OT_execute_order_66)
     bpy.utils.register_class(ADVANCED_GLB_PT_panel)
     bpy.utils.register_class(AdvancedGLBPreferences)
     bpy.utils.register_class(AdvancedGLBSceneProperties)
     
-    # Add scene properties
     bpy.types.Scene.advanced_glb_props = bpy.props.PointerProperty(type=AdvancedGLBSceneProperties)
     
-    # Add save handler
     if on_save_handler not in bpy.app.handlers.save_post:
         bpy.app.handlers.save_post.append(on_save_handler)
 
 def unregister():
     bpy.utils.unregister_class(ADVANCED_GLB_OT_export)
+    bpy.utils.unregister_class(ADVANCED_GLB_OT_delete_track_file)
+    bpy.utils.unregister_class(ADVANCED_GLB_OT_execute_order_66)
     bpy.utils.unregister_class(ADVANCED_GLB_PT_panel)
     bpy.utils.unregister_class(AdvancedGLBPreferences)
     bpy.utils.unregister_class(AdvancedGLBSceneProperties)
     
-    # Remove scene properties
     del bpy.types.Scene.advanced_glb_props
     
-    # Remove save handler
     if on_save_handler in bpy.app.handlers.save_post:
         bpy.app.handlers.save_post.remove(on_save_handler)
 
 if __name__ == "__main__":
-
     register()
