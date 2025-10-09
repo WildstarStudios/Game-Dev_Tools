@@ -1,10 +1,10 @@
 bl_info = {
     "name": "Advanced GLB Auto-Exporter",
     "author": "WildStar Studios",
-    "version": (1, 1),
-    "blender": (4, 3, 0),
+    "version": (2, 0),
+    "blender": (4, 4, 0),
     "location": "View3D > Sidebar > GLB Export",
-    "description": "Advanced GLB export with hierarchical collection separation",
+    "description": "Advanced GLB export with proper origin handling",
     "category": "Import-Export",
 }
 
@@ -42,89 +42,114 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
         scene_props = context.scene.advanced_glb_props
         prefs = context.preferences.addons[__name__].preferences
         
-        # Export Settings Section
-        settings_box = layout.box()
-        settings_box.label(text="Export Settings", icon='SETTINGS')
+        # === ESSENTIAL SETTINGS ===
+        essential_box = layout.box()
+        essential_box.label(text="Essential Settings", icon='SETTINGS')
         
-        # Export path with clear labeling
+        # Export directory
         if not scene_props.export_path:
-            settings_box.label(text="⚠️ Export Directory Not Set", icon='ERROR')
-        settings_box.prop(scene_props, "export_path", text="Export Directory")
+            essential_box.label(text="⚠️ Set Export Directory First", icon='ERROR')
+        row = essential_box.row()
+        row.prop(scene_props, "export_path", text="Export To")
         
-        # Export scope with clear descriptions
-        settings_box.prop(scene_props, "export_scope", text="Export As")
+        # Export type with clear icons
+        essential_box.label(text="Export As:")
+        row = essential_box.row()
+        row.prop(scene_props, "export_scope", expand=True)
         
         # Scope-specific settings
         if scene_props.export_scope == 'SCENE':
-            settings_box.prop(scene_props, "scene_export_filename", text="Filename")
+            essential_box.prop(scene_props, "scene_export_filename", text="Filename")
             if scene_props.export_path:
                 full_path = os.path.join(scene_props.export_path, f"{scene_props.scene_export_filename}.glb")
-                settings_box.label(text=f"Will export: {os.path.basename(full_path)}", icon='FILE_BLEND')
+                essential_box.label(text=f"→ {os.path.basename(full_path)}", icon='FILE_BLEND')
         
         elif scene_props.export_scope == 'COLLECTION':
             if scene_props.export_path:
-                settings_box.label(text="Will export each collection as separate .glb", icon='FILE_BLEND')
-                settings_box.label(text="Naming: {collection_name}.glb")
+                essential_box.label(text="→ Each collection as separate .glb", icon='FILE_BLEND')
+                essential_box.label(text="  Naming: {collection_name}.glb")
         
         elif scene_props.export_scope == 'OBJECT':
             if scene_props.export_path:
-                settings_box.label(text="Will export each object as separate .glb", icon='FILE_BLEND')
-                settings_box.label(text="Naming: {object_name}.glb")
+                essential_box.label(text="→ Each object as separate .glb", icon='FILE_BLEND')
+                essential_box.label(text="  Naming: {object_name}.glb")
         
-        # Auto-export section
-        auto_box = layout.box()
-        auto_box.label(text="Auto-Export", icon='AUTO')
-        auto_box.prop(scene_props, "auto_export_on_save", text="Export on Save")
-        
-        if not scene_props.export_path:
-            auto_box.label(text="Auto-export disabled: No directory set", icon='CANCEL')
-        
-        # Export Options Section
-        options_box = layout.box()
-        options_box.label(text="Export Options", icon='OPTIONS')
-        
-        options_box.prop(prefs, "export_individual_origins", text="Individual Origins")
-        options_box.prop(prefs, "apply_modifiers", text="Apply Modifiers")
-        
-        # Filtering Information
-        filter_box = layout.box()
-        filter_box.label(text="Filtering Rules", icon='FILTER')
-        filter_box.label(text="• '-dk' in name: Don't export")
-        filter_box.label(text="• '-sep' on collection: Export separately")
-        filter_box.label(text="• Hidden objects/collections: Don't export")
-        
-        # Export Summary Section
-        summary_box = layout.box()
-        summary_box.label(text="Export Summary", icon='INFO')
-        
-        if not scene_props.export_path:
-            summary_box.label(text="Set export directory to see summary")
-        else:
-            summary_lines = get_export_summary(scene_props, prefs)
-            for line in summary_lines:
-                summary_box.label(text=line)
-        
-        # Detailed List Option
+        # Quick summary
         if scene_props.export_path:
-            list_box = layout.box()
-            list_box.prop(prefs, "show_detailed_list", text="Show Detailed Object List")
-            if prefs.show_detailed_list:
-                list_box.prop(prefs, "show_hidden_objects", text="Include Hidden Objects")
+            summary_lines = get_quick_summary(scene_props, prefs)
+            for line in summary_lines:
+                essential_box.label(text=line)
         
-        # Export Button
-        button_row = layout.row()
+        # Export Button - Always visible but disabled if no path
+        button_row = essential_box.row()
         button_row.operator("export.advanced_glb", icon='EXPORT', text="Export Now")
         if not scene_props.export_path:
             button_row.enabled = False
-            layout.label(text="Set export directory to enable export", icon='ERROR')
+            essential_box.label(text="Set export directory to enable export", icon='ERROR')
+        
+        # === ADVANCED SETTINGS (Collapsible) ===
+        advanced_box = layout.box()
+        row = advanced_box.row()
+        row.prop(prefs, "show_advanced_settings", text="Advanced Settings", icon='TRIA_DOWN' if prefs.show_advanced_settings else 'TRIA_RIGHT', emboss=False)
+        
+        if prefs.show_advanced_settings:
+            # Auto-export
+            auto_row = advanced_box.row()
+            auto_row.prop(scene_props, "auto_export_on_save", text="Auto-Export on Save")
+            if not scene_props.export_path:
+                auto_row.enabled = False
+                advanced_box.label(text="Set export directory to enable auto-export", icon='CANCEL')
+            
+            # Origin handling (disabled for scene export)
+            origin_row = advanced_box.row()
+            origin_row.label(text="Local Origins:")
+            origin_row.prop(prefs, "export_individual_origins", text="Enabled")
+            
+            if scene_props.export_scope == 'SCENE':
+                origin_row.enabled = False
+                advanced_box.label(text="Local origins not available for scene export", icon='INFO')
+            else:
+                advanced_box.label(text="• Objects/collections export at 3D cursor", icon='DOT')
+                advanced_box.label(text="• Original positions preserved after export", icon='DOT')
+            
+            # Modifiers
+            advanced_box.prop(prefs, "apply_modifiers", text="Apply Modifiers Before Export")
+            
+            # Detailed view
+            advanced_box.prop(prefs, "show_detailed_list", text="Show Detailed Object List")
+            if prefs.show_detailed_list:
+                advanced_box.prop(prefs, "show_hidden_objects", text="Include Hidden Objects in List")
+        
+        # === FILTERING RULES ===
+        if prefs.show_advanced_settings:
+            filter_box = layout.box()
+            filter_box.label(text="Filtering Rules", icon='FILTER')
+            filter_box.label(text="• '-dk' in name: Don't export", icon='X')
+            filter_box.label(text="• '-sep' on collection: Export separately", icon='COLLECTION_NEW')
+            filter_box.label(text="• Hidden objects/collections: Don't export", icon='HIDE_ON')
+        
+        # === DETAILED SUMMARY ===
+        if scene_props.export_path and prefs.show_detailed_list:
+            summary_box = layout.box()
+            summary_box.label(text="Detailed Export Summary", icon='INFO')
+            
+            summary_lines = get_detailed_summary(scene_props, prefs)
+            for line in summary_lines:
+                summary_box.label(text=line)
 
 class AdvancedGLBPreferences(bpy.types.AddonPreferences):
     bl_idname = __name__
 
+    show_advanced_settings: BoolProperty(
+        name="Show Advanced Settings",
+        default=False,
+        description="Show advanced export options"
+    )
+    
     export_individual_origins: BoolProperty(
-        name="Export by Individual Origins",
-        default=True,  # Changed to True by default
-        description="Export each object with its own origin point at (0,0,0)"
+        name="Export with Local Origins",
+        default=True,
+        description="Export each object/collection with its local origin at (0,0,0) by moving to 3D cursor"
     )
     
     apply_modifiers: BoolProperty(
@@ -162,9 +187,9 @@ class AdvancedGLBSceneProperties(bpy.types.PropertyGroup):
     export_scope: EnumProperty(
         name="Export Scope",
         items=[
-            ('SCENE', "Single Scene File", "Export entire scene as one .glb file"),
-            ('COLLECTION', "Separate Collection Files", "Export each collection as individual .glb files"),
-            ('OBJECT', "Separate Object Files", "Export each object as individual .glb files"),
+            ('SCENE', "Scene", "Export entire scene as one .glb file"),
+            ('COLLECTION', "Collections", "Export each collection as individual .glb files"),
+            ('OBJECT', "Objects", "Export each object as individual .glb files"),
         ],
         default='SCENE',
         description="Select how to organize the exported files"
@@ -176,70 +201,97 @@ class AdvancedGLBSceneProperties(bpy.types.PropertyGroup):
         description="Filename for scene export (without .glb extension)"
     )
 
-def get_export_summary(scene_props, prefs):
+def get_quick_summary(scene_props, prefs):
+    """Generate quick summary of what will be exported"""
+    summary_lines = []
+    
+    if scene_props.export_scope == 'SCENE':
+        objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
+        summary_lines.append(f"📦 Exporting {len(objects_to_export)} objects as single file")
+        
+    elif scene_props.export_scope == 'COLLECTION':
+        export_roots = find_collection_export_roots(bpy.context.scene.collection)
+        object_count = sum(
+            len([obj for obj in col.all_objects if should_export_object(obj)])
+            for root_col, collections in export_roots.items()
+            for col in collections
+        )
+        summary_lines.append(f"📦 Exporting {len(export_roots)} collections")
+        summary_lines.append(f"📊 Total objects: {object_count}")
+        
+        if prefs.export_individual_origins:
+            summary_lines.append("📍 Each collection at local origin")
+        
+    elif scene_props.export_scope == 'OBJECT':
+        objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
+        summary_lines.append(f"📦 Exporting {len(objects_to_export)} objects")
+        
+        if prefs.export_individual_origins:
+            summary_lines.append("📍 Each object at local origin")
+    
+    return summary_lines
+
+def get_detailed_summary(scene_props, prefs):
     """Generate detailed summary of what will be exported"""
     summary_lines = []
     
     if scene_props.export_scope == 'SCENE':
         objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
-        summary_lines.append(f"📦 Scene Export: {len(objects_to_export)} objects")
-        summary_lines.append(f"📁 File: {scene_props.scene_export_filename}.glb")
+        summary_lines.append(f"Scene Export: {len(objects_to_export)} objects")
+        summary_lines.append(f"File: {scene_props.scene_export_filename}.glb")
         
-        if prefs.show_detailed_list:
-            summary_lines.append("\nObjects to export:")
-            for obj in objects_to_export:
-                summary_lines.append(f"  • {obj.name} ({obj.type})")
-    
+        if prefs.show_hidden_objects:
+            excluded_objects = [obj for obj in bpy.data.objects if not should_export_object(obj)]
+            if excluded_objects:
+                summary_lines.append("\nExcluded objects:")
+                for obj in excluded_objects:
+                    reason = get_object_exclusion_reason(obj)
+                    summary_lines.append(f"  • {obj.name} ({reason})")
+        
     elif scene_props.export_scope == 'COLLECTION':
         export_roots = find_collection_export_roots(bpy.context.scene.collection)
-        summary_lines.append(f"📦 Collection Export: {len(export_roots)} collections")
+        summary_lines.append(f"Collection Export: {len(export_roots)} collections")
         
         for root_collection, collections_in_root in export_roots.items():
-            # Count all exportable objects in this export root
-            object_count = 0
-            for col in collections_in_root:
-                object_count += len([obj for obj in col.all_objects if should_export_object(obj)])
+            object_count = sum(len([obj for obj in col.all_objects if should_export_object(obj)]) 
+                             for col in collections_in_root)
             
             collection_list = " + ".join([col.name for col in collections_in_root])
-            summary_lines.append(f"  • {root_collection.name}.glb: {object_count} objects")
+            summary_lines.append(f"\n• {root_collection.name}.glb: {object_count} objects")
             
             if len(collections_in_root) > 1:
-                summary_lines.append(f"    Includes: {collection_list}")
-        
-        if prefs.show_detailed_list:
-            summary_lines.append("\nDetailed object list:")
-            for root_collection, collections_in_root in export_roots.items():
-                summary_lines.append(f"\n{root_collection.name}:")
+                summary_lines.append(f"  Includes: {collection_list}")
+            
+            if prefs.show_hidden_objects:
                 for col in collections_in_root:
                     objects_in_col = [obj for obj in col.all_objects if should_export_object(obj)]
                     if objects_in_col:
                         summary_lines.append(f"  {col.name}:")
                         for obj in objects_in_col:
                             summary_lines.append(f"    • {obj.name} ({obj.type})")
+        
+        if prefs.show_hidden_objects:
+            excluded_collections = [col for col in bpy.data.collections if not should_export_collection(col)]
+            if excluded_collections:
+                summary_lines.append("\nExcluded collections:")
+                for col in excluded_collections:
+                    reason = get_collection_exclusion_reason(col)
+                    summary_lines.append(f"  • {col.name} ({reason})")
     
     elif scene_props.export_scope == 'OBJECT':
         objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
-        summary_lines.append(f"📦 Object Export: {len(objects_to_export)} objects")
+        summary_lines.append(f"Object Export: {len(objects_to_export)} objects")
         
-        if prefs.show_detailed_list:
-            for obj in objects_to_export:
-                summary_lines.append(f"  • {obj.name}.glb ({obj.type})")
-    
-    # Show excluded items if detailed view is enabled
-    if prefs.show_hidden_objects:
-        excluded_objects = [obj for obj in bpy.data.objects if not should_export_object(obj)]
-        excluded_collections = [col for col in bpy.data.collections if not should_export_collection(col)]
+        for obj in objects_to_export:
+            summary_lines.append(f"• {obj.name}.glb ({obj.type})")
         
-        if excluded_objects or excluded_collections:
-            summary_lines.append("\n🚫 Excluded from export:")
-            
-            for col in excluded_collections:
-                reason = get_collection_exclusion_reason(col)
-                summary_lines.append(f"  • Collection: {col.name} ({reason})")
-            
-            for obj in excluded_objects:
-                reason = get_object_exclusion_reason(obj)
-                summary_lines.append(f"  • Object: {obj.name} ({reason})")
+        if prefs.show_hidden_objects:
+            excluded_objects = [obj for obj in bpy.data.objects if not should_export_object(obj)]
+            if excluded_objects:
+                summary_lines.append("\nExcluded objects:")
+                for obj in excluded_objects:
+                    reason = get_object_exclusion_reason(obj)
+                    summary_lines.append(f"  • {obj.name} ({reason})")
     
     return summary_lines
 
@@ -260,13 +312,12 @@ def find_collection_export_roots(scene_collection):
                 export_roots[collection] = []
         
         # If we don't have a current root yet, this collection becomes the root
-        # (This handles top-level collections without -sep)
         if current_root is None:
             current_root = collection
             if collection not in export_roots:
                 export_roots[collection] = []
         
-        # Add this collection to the current root (if it's not already there)
+        # Add this collection to the current root
         if current_root is not None and collection not in export_roots[current_root]:
             export_roots[current_root].append(collection)
         
@@ -336,24 +387,20 @@ def should_export_collection(col):
     
     return True
 
-def reset_origins(original_transforms):
-    """Restore original object transforms after export"""
-    for obj, (loc, rot, scale) in original_transforms.items():
-        if obj:  # Ensure object still exists
-            obj.location = loc
-            obj.rotation_euler = rot
-            obj.scale = scale
+def move_to_3d_cursor(obj, cursor_location):
+    """Move object to 3D cursor while preserving its local transform"""
+    # Store the object's current world matrix
+    world_matrix = obj.matrix_world.copy()
+    
+    # Calculate the offset from object's origin to 3D cursor
+    offset = cursor_location - world_matrix.to_translation()
+    
+    # Apply the offset to the object's location
+    obj.location = obj.location + offset
 
-def move_to_origin(obj):
-    """Move object to world origin while preserving mesh relationships"""
-    if obj.parent is None:
-        # Root object - simply move to origin
-        obj.location = (0, 0, 0)
-        obj.rotation_euler = (0, 0, 0)
-        obj.scale = (1, 1, 1)
-    else:
-        # Parented object - adjust local matrix
-        obj.matrix_local = mathutils.Matrix.Identity(4)
+def restore_original_position(obj, original_matrix):
+    """Restore object to its original position"""
+    obj.matrix_world = original_matrix
 
 def export_glb(context):
     scene_props = context.scene.advanced_glb_props
@@ -368,33 +415,39 @@ def export_glb(context):
     if not os.path.exists(scene_props.export_path):
         os.makedirs(scene_props.export_path)
     
-    # Store original transforms for restoration
-    original_transforms = {}
+    # Store original positions for restoration
+    original_positions = {}
+    cursor_location = bpy.context.scene.cursor.location.copy()
     
     try:
-        # Handle individual origins if requested
-        if prefs.export_individual_origins:
-            # Collect all objects that will be exported
-            objects_to_export = []
+        # Handle individual origins if requested (disabled for scene export)
+        if prefs.export_individual_origins and scene_props.export_scope != 'SCENE':
+            print("📍 Using local origins - moving objects to 3D cursor...")
             
-            if scene_props.export_scope == 'SCENE':
-                objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
-            elif scene_props.export_scope == 'COLLECTION':
+            if scene_props.export_scope == 'COLLECTION':
+                # Move each collection's objects as a group to maintain relative positions
                 export_roots = find_collection_export_roots(bpy.context.scene.collection)
                 for root_collection, collections_in_root in export_roots.items():
+                    # Find all objects in this export root
+                    objects_in_root = []
                     for col in collections_in_root:
-                        objects_to_export.extend([obj for obj in col.all_objects if should_export_object(obj)])
-            elif scene_props.export_scope == 'OBJECT':
-                objects_to_export = [obj for obj in bpy.data.objects if should_export_object(obj)]
+                        objects_in_root.extend([obj for obj in col.all_objects if should_export_object(obj)])
+                    
+                    if objects_in_root:
+                        # Store original positions
+                        for obj in objects_in_root:
+                            original_positions[obj] = obj.matrix_world.copy()
+                        
+                        # Move entire group to 3D cursor
+                        for obj in objects_in_root:
+                            move_to_3d_cursor(obj, cursor_location)
             
-            # Store original transforms and move to origin
-            for obj in objects_to_export:
-                original_transforms[obj] = (
-                    obj.location.copy(),
-                    obj.rotation_euler.copy(),
-                    obj.scale.copy()
-                )
-                move_to_origin(obj)
+            elif scene_props.export_scope == 'OBJECT':
+                # Move each object individually to 3D cursor
+                for obj in bpy.data.objects:
+                    if should_export_object(obj):
+                        original_positions[obj] = obj.matrix_world.copy()
+                        move_to_3d_cursor(obj, cursor_location)
         
         # Set common export settings
         export_settings = {
@@ -430,7 +483,7 @@ def export_glb(context):
             success_count = 0
             
             for root_collection, collections_in_root in export_roots.items():
-                # Use collection name for filename (NOT scene name)
+                # Use collection name for filename
                 filename = f"{root_collection.name}.glb"
                 export_path = os.path.join(scene_props.export_path, filename)
                 
@@ -497,9 +550,12 @@ def export_glb(context):
         return {'CANCELLED'}
     
     finally:
-        # Always restore original transforms if we modified them
-        if prefs.export_individual_origins and original_transforms:
-            reset_origins(original_transforms)
+        # Always restore original positions if we moved objects
+        if original_positions:
+            print("📍 Restoring original object positions...")
+            for obj, original_matrix in original_positions.items():
+                if obj:  # Ensure object still exists
+                    restore_original_position(obj, original_matrix)
 
 @persistent
 def on_save_handler(dummy):
@@ -544,4 +600,5 @@ def unregister():
         bpy.app.handlers.save_post.remove(on_save_handler)
 
 if __name__ == "__main__":
+
     register()
