@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "Advanced GLB Auto-Exporter (Experimental)",
-    "author": "WildStar Studios",
-    "version": (2, 3, "beta 3"),
-    "blender": (4, 4, 0),
-    "location": "View3D > Sidebar > GLB Export",
-    "description": "EXPERIMENTAL: Advanced GLB export with proper collection origin handling - USE WITH CAUTION",
+    "name": "Advanced Auto-Exporter",
+    "author": "WildStar Studios", 
+    "version": (2, 3, 0),
+    "blender": (4, 5, 0),
+    "location": "View3D > Sidebar > Export",
+    "description": "Advanced export with proper collection origin handling",
     "category": "Import-Export",
 }
 
@@ -20,8 +20,8 @@ from mathutils import Vector
 
 class ADVANCED_GLB_OT_export(bpy.types.Operator):
     bl_idname = "export.advanced_glb"
-    bl_label = "Export GLB"
-    bl_description = "Export GLB using current settings"
+    bl_label = "Export"
+    bl_description = "Export using current settings"
     bl_options = {'REGISTER'}
 
     def execute(self, context):
@@ -52,7 +52,7 @@ class ADVANCED_GLB_OT_delete_track_file(bpy.types.Operator):
 class ADVANCED_GLB_OT_execute_order_66(bpy.types.Operator):
     bl_idname = "advanced_glb.execute_order_66"
     bl_label = "Execute Order 66"
-    bl_description = "Delete orphaned GLB files based on tracking data"
+    bl_description = "Delete orphaned files based on tracking data"
     bl_options = {'REGISTER'}
     
     confirm: BoolProperty(default=False)
@@ -62,7 +62,7 @@ class ADVANCED_GLB_OT_execute_order_66(bpy.types.Operator):
     
     def draw(self, context):
         layout = self.layout
-        layout.label(text="This will delete orphaned GLB files.", icon='ERROR')
+        layout.label(text="This will delete orphaned files.", icon='ERROR')
         layout.label(text="This action cannot be undone!")
         
         # Show what will be deleted
@@ -89,23 +89,53 @@ class ADVANCED_GLB_OT_execute_order_66(bpy.types.Operator):
             self.report({'INFO'}, "No orphaned files found to delete")
         return {'FINISHED'}
 
+class ADVANCED_GLB_OT_validate_sk_modifiers(bpy.types.Operator):
+    bl_idname = "advanced_glb.validate_sk_modifiers"
+    bl_label = "Validate -sk Modifiers"
+    bl_description = "Check for invalid -sk modifier usage in collections"
+    bl_options = {'REGISTER'}
+    
+    def execute(self, context):
+        invalid_collections = validate_sk_modifiers()
+        
+        if not invalid_collections:
+            self.report({'INFO'}, "All -sk modifiers are valid")
+            return {'FINISHED'}
+        
+        # Show detailed report
+        report_lines = []
+        for col, issues in invalid_collections.items():
+            report_lines.append(f"Collection '{col.name}':")
+            for issue in issues:
+                report_lines.append(f"  • {issue}")
+        
+        # Show in popup
+        def draw_report(self, context):
+            layout = self.layout
+            for line in report_lines:
+                layout.label(text=line)
+        
+        context.window_manager.popup_menu(draw_report, title="Invalid -sk Modifier Usage", icon='ERROR')
+        
+        self.report({'WARNING'}, f"Found {len(invalid_collections)} collections with invalid -sk usage")
+        return {'FINISHED'}
+
 class ADVANCED_GLB_PT_panel(bpy.types.Panel):
-    bl_label = "GLB Auto-Export (Experimental)"
+    bl_label = "Advanced Auto-Export"
     bl_idname = "VIEW3D_PT_advanced_glb_export"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
-    bl_category = 'GLB Export'
+    bl_category = 'Export'
 
     def draw(self, context):
         layout = self.layout
         scene_props = context.scene.advanced_glb_props
         prefs = context.preferences.addons[__name__].preferences
         
-        # === EXPERIMENTAL WARNING ===
-        warning_box = layout.box()
-        warning_box.alert = True
-        warning_box.label(text="⚠️ EXPERIMENTAL VERSION", icon='ERROR')
-        warning_box.label(text="Use with caution - backup your files!")
+        # === STABLE VERSION INFO ===
+        stable_box = layout.box()
+        stable_box.label(text="✅ STABLE VERSION 2.3.0", icon='CHECKMARK')
+        stable_box.label(text="Added OBJ Up Axis setting")
         
         # === ESSENTIAL SETTINGS ===
         essential_box = layout.box()
@@ -113,6 +143,10 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
         
         # Export format
         essential_box.prop(scene_props, "export_format", text="Format")
+        
+        # OBJ Up Axis setting (only show when OBJ format is selected)
+        if scene_props.export_format == 'OBJ':
+            essential_box.prop(scene_props, "obj_up_axis", text="Up Axis")
         
         # Export directory
         if not scene_props.export_path:
@@ -155,7 +189,12 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
         
         # Export Button - Always visible but disabled if no path
         button_row = essential_box.row()
-        button_row.operator("export.advanced_glb", icon='EXPORT', text=f"Export {scene_props.export_format}")
+        button_text = f"Export {scene_props.export_format}"
+        if scene_props.export_scope == 'SCENE':
+            scene_clean, _ = parse_modifiers(scene_props.scene_export_filename)
+            button_text = f"Export {scene_clean}{get_extension(scene_props.export_format)}"
+        
+        button_row.operator("export.advanced_glb", icon='EXPORT', text=button_text)
         if not scene_props.export_path:
             button_row.enabled = False
             essential_box.label(text="Set export directory to enable export", icon='ERROR')
@@ -218,15 +257,19 @@ class ADVANCED_GLB_PT_panel(bpy.types.Panel):
             filter_box.label(text="Filtering Rules", icon='FILTER')
             filter_box.label(text="• '-dk' in name: Don't export", icon='X')
             filter_box.label(text="• '-sep' on collection: Export separately", icon='COLLECTION_NEW')
+            filter_box.label(text="• '-sk' on collection: Skip this (strict)", icon='COLLECTION_NEW')
             filter_box.label(text="• '-dir:path' in name: Export to subfolder", icon='FILE_FOLDER')
             filter_box.label(text="• Hidden objects/collections: Don't export", icon='HIDE_ON')
+            
+            # -sk validation button
+            row = filter_box.row()
+            row.operator("advanced_glb.validate_sk_modifiers", icon='VIEWZOOM')
         
         # === EXPERIMENTAL FEATURES ===
         if prefs.show_advanced_settings and prefs.enable_export_tracking:
             experimental_box = layout.box()
-            experimental_box.alert = True
-            experimental_box.label(text="🧪 Experimental Features", icon='EXPERIMENTAL')
-            experimental_box.label(text="Tracking System: ON", icon='FILE_HIDDEN')
+            experimental_box.label(text="Tracking System", icon='FILE_HIDDEN')
+            experimental_box.label(text="Track exported files to identify orphans")
             
             # Track file location setting
             experimental_box.prop(prefs, "track_file_location", expand=True)
@@ -265,7 +308,7 @@ class AdvancedGLBPreferences(bpy.types.AddonPreferences):
     
     apply_modifiers: BoolProperty(
         name="Apply Modifiers",
-        default=True,
+        default=False,
         description="Apply modifiers before export"
     )
     
@@ -281,9 +324,9 @@ class AdvancedGLBPreferences(bpy.types.AddonPreferences):
         description="Include hidden objects in the detailed list"
     )
     
-    # Experimental tracking settings
+    # Tracking settings
     enable_export_tracking: BoolProperty(
-        name="Enable Export Tracking (Experimental)",
+        name="Enable Export Tracking",
         default=False,
         description="Track exported files to identify orphans. Uses .track files"
     )
@@ -301,14 +344,12 @@ class AdvancedGLBPreferences(bpy.types.AddonPreferences):
     def draw(self, context):
         layout = self.layout
         
-        # Warning box
-        warning_box = layout.box()
-        warning_box.alert = True
-        warning_box.label(text="⚠️ EXPERIMENTAL VERSION", icon='ERROR')
-        warning_box.label(text="This addon is in beta testing phase")
-        warning_box.label(text="Backup your files before use!")
+        # Stable version info
+        stable_box = layout.box()
+        stable_box.label(text="✅ STABLE VERSION 2.3.0", icon='CHECKMARK')
+        stable_box.label(text="Added OBJ Up Axis setting")
         
-        layout.label(text="GLB Export Settings")
+        layout.label(text="Export Settings")
         
         # Main settings
         layout.prop(self, "export_individual_origins")
@@ -317,10 +358,10 @@ class AdvancedGLBPreferences(bpy.types.AddonPreferences):
         layout.prop(self, "show_hidden_objects")
         layout.prop(self, "show_advanced_settings")
         
-        # Experimental tracking section
+        # Tracking section
         layout.separator()
         box = layout.box()
-        box.label(text="Experimental Tracking System", icon='EXPERIMENTAL')
+        box.label(text="Export Tracking System", icon='FILE_HIDDEN')
         box.prop(self, "enable_export_tracking")
         
         if self.enable_export_tracking:
@@ -341,21 +382,21 @@ class AdvancedGLBSceneProperties(bpy.types.PropertyGroup):
         name="Export Path",
         subtype='DIR_PATH',
         default="",
-        description="Directory path for GLB exports. Each blend file remembers its own path"
+        description="Directory path for exports. Each blend file remembers its own path"
     )
     
     auto_export_on_save: BoolProperty(
         name="Auto Export on Save",
-        default=False,
-        description="Automatically export GLB when saving the Blender file"
+        default=True,
+        description="Automatically export when saving the Blender file"
     )
     
     export_scope: EnumProperty(
         name="Export Scope",
         items=[
-            ('SCENE', "Scene", "Export entire scene as one .glb file"),
-            ('COLLECTION', "Collections", "Export each collection as individual .glb files"),
-            ('OBJECT', "Objects", "Export each object as individual .glb files"),
+            ('SCENE', "Scene", "Export entire scene as one file"),
+            ('COLLECTION', "Collections", "Export each collection as individual files"),
+            ('OBJECT', "Objects", "Export each object as individual files"),
         ],
         default='SCENE',
         description="Select how to organize the exported files"
@@ -364,19 +405,29 @@ class AdvancedGLBSceneProperties(bpy.types.PropertyGroup):
     scene_export_filename: StringProperty(
         name="Scene Filename",
         default="scene",
-        description="Filename for scene export (without .glb extension)"
+        description="Filename for scene export (without extension)"
     )
     
     export_format: EnumProperty(
         name="Export Format",
         items=[
-            ('GLB', "GLB", "GLB Binary (.glb)"),
-            ('GLTF', "GLTF", "GLTF Separate (.gltf + .bin + textures)"),
-            ('OBJ', "OBJ", "Wavefront OBJ (.obj)"),
-            ('FBX', "FBX", "FBX (.fbx)"),
+            ('GLB', "GLB compatible with 2.8", "GLB Binary (.glb)"),
+            ('GLTF', "GLTF compatible with 2.8+", "GLTF Separate (.gltf + .bin + textures)"),
+            ('OBJ', "OBJ tested with 4.0+", "Wavefront OBJ (.obj)"),
+            ('FBX', "FBX compatible with 2.8+", "FBX (.fbx)"),
         ],
         default='GLB',
         description="Export file format"
+    )
+    
+    obj_up_axis: EnumProperty(
+        name="OBJ Up Axis",
+        items=[
+            ('Y', "Y Up", "Y is up (standard for most applications)"),
+            ('Z', "Z Up", "Z is up (Blender's default)"),
+        ],
+        default='Y',
+        description="Up axis for OBJ exports"
     )
 
 # ===== UTILITY FUNCTIONS =====
@@ -391,15 +442,106 @@ def get_extension(format_type):
     }
     return extensions.get(format_type, '.glb')
 
-def get_export_operator(format_type):
-    """Get the appropriate export operator for the format"""
-    operators = {
-        'GLB': 'export_scene.gltf',
-        'GLTF': 'export_scene.gltf',
-        'OBJ': 'export_scene.obj',
-        'FBX': 'export_scene.fbx'
+def check_operator_exists(operator_name):
+    """Check if an operator exists in Bforartists"""
+    try:
+        # Try to get the operator class
+        op_class = getattr(bpy.ops, operator_name.split('.')[1])
+        return hasattr(op_class, 'poll')
+    except:
+        return False
+
+def get_available_export_operators():
+    """Get available export operators in Bforartists"""
+    available_ops = {}
+    
+    # Test common operator names
+    test_operators = {
+        'GLB': ['export_scene.gltf'],
+        'GLTF': ['export_scene.gltf'],
+        'OBJ': ['export_scene.obj', 'export_mesh.obj', 'wm.obj_export'],
+        'FBX': ['export_scene.fbx', 'wm.fbx_export']
     }
-    return operators.get(format_type, 'export_scene.gltf')
+    
+    for format_type, operators in test_operators.items():
+        for op in operators:
+            if check_operator_exists(op):
+                available_ops[format_type] = op
+                break
+    
+    return available_ops
+
+# ===== OBJ EXPORT COMPATIBILITY =====
+
+def export_obj_compat(filepath, use_selection=False, apply_modifiers=True):
+    """
+    Export OBJ files with compatibility for both Blender <4.0 and >=4.0
+    Uses the new wm.obj_export operator for Blender 4.0+ with correct parameters
+    """
+    try:
+        scene_props = bpy.context.scene.advanced_glb_props
+        
+        # Check if we're using Blender 4.0+ (new OBJ exporter)
+        if bpy.app.version >= (4, 0, 0):
+            # New OBJ exporter parameters (Blender 4.0+)
+            export_params = {
+                'filepath': filepath,
+                'export_selected_objects': use_selection,
+                'apply_modifiers': apply_modifiers,
+                'export_normals': True,
+                'export_uv': True,
+                'export_materials': True,
+                'export_triangulated_mesh': False,
+                'global_scale': 1.0,
+                'forward_axis': 'Y',
+                'up_axis': scene_props.obj_up_axis  # Use the user's choice
+            }
+            
+            # Try the new operator
+            bpy.ops.wm.obj_export(**export_params)
+            print(f"✅ Exported OBJ (4.0+ method) to: {filepath}")
+            print(f"   Up Axis: {scene_props.obj_up_axis}")
+            return True
+            
+        else:
+            # Old OBJ exporter parameters (Blender <4.0)
+            # Map up axis choice to old exporter parameters
+            if scene_props.obj_up_axis == 'Y':
+                axis_forward = '-Z'
+                axis_up = 'Y'
+            else:  # 'Z'
+                axis_forward = 'Y' 
+                axis_up = 'Z'
+            
+            export_params = {
+                'filepath': filepath,
+                'use_selection': use_selection,
+                'use_mesh_modifiers': apply_modifiers,
+                'use_normals': True,
+                'use_uvs': True,
+                'use_materials': True,
+                'use_triangles': False,
+                'use_nurbs': False,
+                'use_vertex_groups': False,
+                'use_blen_objects': True,
+                'group_by_object': False,
+                'group_by_material': False,
+                'keep_vertex_order': False,
+                'global_scale': 1.0,
+                'path_mode': 'AUTO',
+                'axis_forward': axis_forward,
+                'axis_up': axis_up
+            }
+            
+            # Try the old operator
+            bpy.ops.export_scene.obj(**export_params)
+            print(f"✅ Exported OBJ (legacy method) to: {filepath}")
+            print(f"   Up Axis: {scene_props.obj_up_axis}")
+            return True
+            
+    except Exception as e:
+        print(f"❌ OBJ export failed: {str(e)}")
+        return False
 
 # ===== COLLECTION ORIGIN HANDLING =====
 
@@ -452,7 +594,88 @@ def restore_collection_positions(original_positions):
         if obj:  # Ensure object still exists
             obj.matrix_world = original_matrix
 
-# ===== IMPROVED TRACKING SYSTEM =====
+# ===== IMPROVED MODIFIER PARSING =====
+
+def parse_modifiers(name):
+    """Parse modifiers from name and return clean name + modifiers dict"""
+    modifiers = {
+        'dir': None,
+        'sep': False,
+        'dk': False,
+        'sk': False  # New strict skip modifier
+    }
+    
+    clean_name = name.strip()
+    
+    # Extract -dir:path modifier (with optional spaces)
+    dir_match = re.search(r'\s*-dir:([^\s]+)\s*', clean_name)
+    if dir_match:
+        modifiers['dir'] = dir_match.group(1).strip()
+        clean_name = clean_name.replace(dir_match.group(0), ' ').strip()
+    
+    # Extract boolean modifiers (with optional spaces)
+    if re.search(r'\s*-sep\s*', clean_name):
+        modifiers['sep'] = True
+        clean_name = re.sub(r'\s*-sep\s*', ' ', clean_name).strip()
+    
+    if re.search(r'\s*-dk\s*', clean_name):
+        modifiers['dk'] = True
+        clean_name = re.sub(r'\s*-dk\s*', ' ', clean_name).strip()
+    
+    if re.search(r'\s*-sk\s*', clean_name):
+        modifiers['sk'] = True
+        clean_name = re.sub(r'\s*-sk\s*', ' ', clean_name).strip()
+    
+    # Clean up any extra spaces
+    clean_name = re.sub(r'\s+', ' ', clean_name).strip()
+    
+    return clean_name, modifiers
+
+def validate_sk_modifiers():
+    """
+    Validate -sk modifier usage.
+    Returns a dict of collections with invalid -sk usage and their issues.
+    """
+    invalid_collections = {}
+    
+    def check_collection_sk_usage(collection):
+        issues = []
+        clean_name, modifiers = parse_modifiers(collection.name)
+        
+        if not modifiers['sk']:
+            return issues
+        
+        # Check 1: Collection with -sk should not contain objects directly
+        if collection.objects:
+            issues.append(f"Contains {len(collection.objects)} objects directly (should only contain subcollections)")
+        
+        # Check 2: All subcollections must have proper modifiers
+        invalid_subcollections = []
+        for subcol in collection.children:
+            sub_clean, sub_modifiers = parse_modifiers(subcol.name)
+            if not (sub_modifiers['sep'] or sub_modifiers['dk'] or sub_modifiers['sk']):
+                invalid_subcollections.append(subcol.name)
+        
+        if invalid_subcollections:
+            issues.append(f"Subcollections without modifiers: {', '.join(invalid_subcollections[:3])}{'...' if len(invalid_subcollections) > 3 else ''}")
+        
+        # Recursively check subcollections
+        for subcol in collection.children:
+            sub_issues = check_collection_sk_usage(subcol)
+            if sub_issues:
+                issues.extend([f"Subcollection '{subcol.name}': {issue}" for issue in sub_issues])
+        
+        return issues
+    
+    # Check all collections in the scene
+    for collection in bpy.data.collections:
+        issues = check_collection_sk_usage(collection)
+        if issues:
+            invalid_collections[collection] = issues
+    
+    return invalid_collections
+
+# ===== TRACKING SYSTEM =====
 
 def get_track_file_path():
     """Get the path for the track file based on preferences"""
@@ -545,7 +768,7 @@ def update_track_file(exported_files, export_path):
     save_track_data(track_data)
 
 def find_orphaned_files():
-    """Find orphaned files based on tracking data - FIXED VERSION"""
+    """Find orphaned files based on tracking data"""
     track_data = load_track_data()
     orphans = []
     
@@ -589,7 +812,7 @@ def find_orphaned_files():
     return orphans
 
 def cleanup_orphaned_files():
-    """Delete orphaned files and update track file - FIXED VERSION"""
+    """Delete orphaned files and update track file"""
     orphans = find_orphaned_files()
     deleted_files = []
     
@@ -644,37 +867,7 @@ def cleanup_orphaned_files():
     save_track_data(track_data)
     return deleted_files
 
-# ===== IMPROVED MODIFIER PARSING =====
-
-def parse_modifiers(name):
-    """Parse modifiers from name and return clean name + modifiers dict - FIXED VERSION"""
-    modifiers = {
-        'dir': None,
-        'sep': False,
-        'dk': False
-    }
-    
-    clean_name = name.strip()
-    
-    # Extract -dir:path modifier (with optional spaces)
-    dir_match = re.search(r'\s*-dir:([^\s]+)\s*', clean_name)
-    if dir_match:
-        modifiers['dir'] = dir_match.group(1).strip()
-        clean_name = clean_name.replace(dir_match.group(0), ' ').strip()
-    
-    # Extract boolean modifiers (with optional spaces)
-    if re.search(r'\s*-sep\s*', clean_name):
-        modifiers['sep'] = True
-        clean_name = re.sub(r'\s*-sep\s*', ' ', clean_name).strip()
-    
-    if re.search(r'\s*-dk\s*', clean_name):
-        modifiers['dk'] = True
-        clean_name = re.sub(r'\s*-dk\s*', ' ', clean_name).strip()
-    
-    # Clean up any extra spaces
-    clean_name = re.sub(r'\s+', ' ', clean_name).strip()
-    
-    return clean_name, modifiers
+# ===== CORE EXPORT FUNCTIONS =====
 
 def get_final_export_path(base_path, dir_modifier, clean_name, scope, format_type):
     """Get the final export path with directory modifiers applied"""
@@ -889,32 +1082,45 @@ def get_detailed_summary(scene_props, prefs):
     return summary_lines
 
 def find_collection_export_roots(scene_collection):
-    """Find all collection export roots. ALL collections are exportable unless they have -dk."""
+    """Find all collection export roots with -sk modifier support"""
     export_roots = {}
     
     def traverse_collections(collection, current_root=None):
         """Recursively traverse collections to find export roots"""
         clean_name, modifiers = parse_modifiers(collection.name)
         
+        # Skip collections with -dk modifier
         if modifiers['dk'] or not should_export_collection(collection):
             return
         
+        # Handle -sk modifier (strict skip)
+        if modifiers['sk']:
+            # Skip this collection as an export root but continue traversing children
+            for child_collection in collection.children:
+                traverse_collections(child_collection, current_root)
+            return
+        
+        # Handle -sep modifier (separate export)
         if modifiers['sep']:
             current_root = collection
             if collection not in export_roots:
                 export_roots[collection] = []
         
+        # Set current root if none is set
         if current_root is None:
             current_root = collection
             if collection not in export_roots:
                 export_roots[collection] = []
         
+        # Add collection to current root's export group
         if current_root is not None and collection not in export_roots[current_root]:
             export_roots[current_root].append(collection)
         
+        # Traverse children
         for child_collection in collection.children:
             traverse_collections(child_collection, current_root)
     
+    # Start traversal from scene collection children
     for child_collection in scene_collection.children:
         traverse_collections(child_collection)
     
@@ -942,6 +1148,8 @@ def get_collection_exclusion_reason(col):
     reasons = []
     if modifiers['dk']:
         reasons.append("'-dk' modifier")
+    if modifiers['sk']:
+        reasons.append("'-sk' modifier")
     if col.hide_viewport:
         reasons.append("hidden in viewport")
     if col.hide_render:
@@ -1029,69 +1237,9 @@ def export_glb(context):
                         original_positions[obj] = obj.matrix_world.copy()
                         move_to_3d_cursor(obj, cursor_location)
         
-        # Set common export settings based on format
-        export_operator = get_export_operator(scene_props.export_format)
-        export_settings = {
-            'export_format': 'GLB' if scene_props.export_format == 'GLB' else 'GLTF',
-            'export_apply': prefs.apply_modifiers,
-            'export_yup': True
-        }
-        
-        # Add format-specific settings
-        if scene_props.export_format == 'GLTF':
-            export_settings['export_format'] = 'GLTF_SEPARATE'
-        elif scene_props.export_format == 'OBJ':
-            # OBJ specific settings
-            export_settings.update({
-                'use_selection': False,
-                'use_mesh_modifiers': prefs.apply_modifiers,
-                'use_normals': True,
-                'use_uvs': True,
-                'use_materials': True,
-                'use_triangles': False,
-                'use_nurbs': False,
-                'use_vertex_groups': False,
-                'use_blen_objects': True,
-                'group_by_object': False,
-                'group_by_material': False,
-                'keep_vertex_order': False,
-                'global_scale': 1.0,
-                'path_mode': 'AUTO'
-            })
-        elif scene_props.export_format == 'FBX':
-            # FBX specific settings
-            export_settings.update({
-                'use_selection': False,
-                'use_active_collection': False,
-                'global_scale': 1.0,
-                'apply_unit_scale': True,
-                'apply_scale_options': 'FBX_SCALE_NONE',
-                'use_space_transform': True,
-                'bake_space_transform': False,
-                'object_types': {'MESH', 'ARMATURE'},
-                'use_mesh_modifiers': prefs.apply_modifiers,
-                'use_mesh_modifiers_render': True,
-                'mesh_smooth_type': 'OFF',
-                'use_subsurf': False,
-                'use_mesh_edges': False,
-                'use_tspace': False,
-                'use_custom_props': False,
-                'add_leaf_bones': False,
-                'primary_bone_axis': 'Y',
-                'secondary_bone_axis': 'X',
-                'use_armature_deform_only': False,
-                'armature_nodetype': 'NULL',
-                'bake_anim': True,
-                'bake_anim_use_all_bones': True,
-                'bake_anim_use_nla_strips': True,
-                'bake_anim_use_all_actions': True,
-                'bake_anim_force_startend_keying': True,
-                'bake_anim_step': 1.0,
-                'bake_anim_simplify_factor': 1.0,
-                'path_mode': 'AUTO',
-                'embed_textures': False,
-                'batch_mode': 'OFF'
-            })
+        # Get available operators for Bforartists
+        available_ops = get_available_export_operators()
+        print(f"📊 Available operators: {available_ops}")
         
         # Handle export scope
         if scene_props.export_scope == 'SCENE':
@@ -1102,18 +1250,32 @@ def export_glb(context):
             if ensure_directory_exists(export_path):
                 print(f"📁 Created directory: {os.path.dirname(export_path)}")
             
-            export_settings['filepath'] = export_path
-            
             try:
-                # For OBJ and FBX, we need to handle selection differently
-                if scene_props.export_format in ['OBJ', 'FBX']:
-                    export_settings['use_selection'] = False
-                    # These operators export the entire scene by default
-                    bpy.ops.export_scene.obj(**export_settings) if scene_props.export_format == 'OBJ' else bpy.ops.export_scene.fbx(**export_settings)
-                else:
-                    # GLB/GLTF
-                    export_settings['use_selection'] = False
-                    bpy.ops.export_scene.gltf(**export_settings)
+                if scene_props.export_format in ['GLB', 'GLTF']:
+                    # GLB/GLTF export
+                    bpy.ops.export_scene.gltf(
+                        filepath=export_path,
+                        export_format='GLB' if scene_props.export_format == 'GLB' else 'GLTF_SEPARATE',
+                        use_selection=False,
+                        export_apply=prefs.apply_modifiers,
+                        export_yup=True
+                    )
+                elif scene_props.export_format == 'OBJ':
+                    # Use the new OBJ compatibility function
+                    success = export_obj_compat(
+                        filepath=export_path,
+                        use_selection=False,
+                        apply_modifiers=prefs.apply_modifiers
+                    )
+                    if not success:
+                        return {'CANCELLED'}
+                elif scene_props.export_format == 'FBX':
+                    # FBX export
+                    bpy.ops.export_scene.fbx(
+                        filepath=export_path,
+                        use_selection=False,
+                        use_mesh_modifiers=prefs.apply_modifiers
+                    )
                 
                 print(f"✅ Exported scene to: {export_path}")
                 if scene_modifiers.get('dir'):
@@ -1158,19 +1320,32 @@ def export_glb(context):
                     print(f"⚠️ Skipping '{col_clean}': No exportable objects")
                     continue
                 
-                # Update export settings
-                root_settings = export_settings.copy()
-                root_settings['filepath'] = export_path
-                root_settings['use_selection'] = True
-                
                 try:
-                    if scene_props.export_format in ['OBJ', 'FBX']:
-                        if scene_props.export_format == 'OBJ':
-                            bpy.ops.export_scene.obj(**root_settings)
-                        else:
-                            bpy.ops.export_scene.fbx(**root_settings)
-                    else:
-                        bpy.ops.export_scene.gltf(**root_settings)
+                    if scene_props.export_format in ['GLB', 'GLTF']:
+                        # GLB/GLTF export
+                        bpy.ops.export_scene.gltf(
+                            filepath=export_path,
+                            export_format='GLB' if scene_props.export_format == 'GLB' else 'GLTF_SEPARATE',
+                            use_selection=True,
+                            export_apply=prefs.apply_modifiers,
+                            export_yup=True
+                        )
+                    elif scene_props.export_format == 'OBJ':
+                        # Use the new OBJ compatibility function
+                        success = export_obj_compat(
+                            filepath=export_path,
+                            use_selection=True,
+                            apply_modifiers=prefs.apply_modifiers
+                        )
+                        if not success:
+                            continue
+                    elif scene_props.export_format == 'FBX':
+                        # FBX export
+                        bpy.ops.export_scene.fbx(
+                            filepath=export_path,
+                            use_selection=True,
+                            use_mesh_modifiers=prefs.apply_modifiers
+                        )
                     
                     collection_list = ", ".join([parse_modifiers(col.name)[0] for col in collections_in_root])
                     print(f"✅ Exported '{col_clean}' to: {export_path}")
@@ -1214,19 +1389,32 @@ def export_glb(context):
                 bpy.ops.object.select_all(action='DESELECT')
                 obj.select_set(True)
                 
-                # Update export settings
-                object_settings = export_settings.copy()
-                object_settings['filepath'] = export_path
-                object_settings['use_selection'] = True
-                
                 try:
-                    if scene_props.export_format in ['OBJ', 'FBX']:
-                        if scene_props.export_format == 'OBJ':
-                            bpy.ops.export_scene.obj(**object_settings)
-                        else:
-                            bpy.ops.export_scene.fbx(**object_settings)
-                    else:
-                        bpy.ops.export_scene.gltf(**object_settings)
+                    if scene_props.export_format in ['GLB', 'GLTF']:
+                        # GLB/GLTF export
+                        bpy.ops.export_scene.gltf(
+                            filepath=export_path,
+                            export_format='GLB' if scene_props.export_format == 'GLB' else 'GLTF_SEPARATE',
+                            use_selection=True,
+                            export_apply=prefs.apply_modifiers,
+                            export_yup=True
+                        )
+                    elif scene_props.export_format == 'OBJ':
+                        # Use the new OBJ compatibility function
+                        success = export_obj_compat(
+                            filepath=export_path,
+                            use_selection=True,
+                            apply_modifiers=prefs.apply_modifiers
+                        )
+                        if not success:
+                            continue
+                    elif scene_props.export_format == 'FBX':
+                        # FBX export
+                        bpy.ops.export_scene.fbx(
+                            filepath=export_path,
+                            use_selection=True,
+                            use_mesh_modifiers=prefs.apply_modifiers
+                        )
                     
                     print(f"✅ Exported '{obj_clean}' to: {export_path}")
                     
@@ -1304,6 +1492,7 @@ def register():
     bpy.utils.register_class(ADVANCED_GLB_OT_export)
     bpy.utils.register_class(ADVANCED_GLB_OT_delete_track_file)
     bpy.utils.register_class(ADVANCED_GLB_OT_execute_order_66)
+    bpy.utils.register_class(ADVANCED_GLB_OT_validate_sk_modifiers)
     bpy.utils.register_class(ADVANCED_GLB_PT_panel)
     bpy.utils.register_class(AdvancedGLBPreferences)
     bpy.utils.register_class(AdvancedGLBSceneProperties)
@@ -1317,6 +1506,7 @@ def unregister():
     bpy.utils.unregister_class(ADVANCED_GLB_OT_export)
     bpy.utils.unregister_class(ADVANCED_GLB_OT_delete_track_file)
     bpy.utils.unregister_class(ADVANCED_GLB_OT_execute_order_66)
+    bpy.utils.unregister_class(ADVANCED_GLB_OT_validate_sk_modifiers)
     bpy.utils.unregister_class(ADVANCED_GLB_PT_panel)
     bpy.utils.unregister_class(AdvancedGLBPreferences)
     bpy.utils.unregister_class(AdvancedGLBSceneProperties)
