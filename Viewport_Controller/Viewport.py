@@ -6,11 +6,11 @@ import time
 
 bl_info = {
     "name": "Viewport Navigator",
-    "author": "Your Name",
-    "version": (1, 3),
-    "blender": (3, 0, 0),
+    "author": "WildStar Studios",
+    "version": (1, 0),
+    "blender": (4, 5, 0),
     "location": "3D View > Sidebar > View",
-    "description": "Real-time viewport position and rotation control",
+    "description": "Real-time viewport position, rotation and zoom control",
     "category": "3D View",
 }
 
@@ -66,6 +66,13 @@ def update_viewport_from_properties():
     except:
         pass
     
+    # Apply new zoom (view distance)
+    try:
+        # In Blender, smaller view_distance = more zoom
+        r3d.view_distance = wm.viewport_zoom
+    except:
+        pass
+    
     updating = False
 
 def update_properties_from_viewport():
@@ -98,11 +105,15 @@ def update_properties_from_viewport():
         )
         
         # Update properties if different
-        if (rotation_degrees != wm.viewport_rotation or 
-            r3d.view_location != wm.viewport_location):
+        location_changed = r3d.view_location != wm.viewport_location
+        rotation_changed = rotation_degrees != wm.viewport_rotation
+        zoom_changed = r3d.view_distance != wm.viewport_zoom
+        
+        if location_changed or rotation_changed or zoom_changed:
             updating = True
             wm.viewport_location = r3d.view_location
             wm.viewport_rotation = rotation_degrees
+            wm.viewport_zoom = r3d.view_distance
             updating = False
     except:
         pass
@@ -138,15 +149,28 @@ class VIEW3D_PT_viewport_navigator(bpy.types.Panel):
         else:
             layout.prop(wm, "enable_viewport_control", toggle=True, text="Deactivate")
             
+            # Location
             col = layout.column(align=True)
-            col.label(text="Viewport Location:")
+            col.label(text="Location:")
             col.prop(wm, "viewport_location", text="")
             
+            # Rotation
             col = layout.column(align=True)
-            col.label(text="Viewport Rotation (Degrees):")
+            col.label(text="Rotation (Degrees):")
             col.prop(wm, "viewport_rotation", text="")
             
-            layout.operator("viewport.reset_transform", icon='LOOP_BACK')
+            # Zoom
+            col = layout.column(align=True)
+            col.label(text="Zoom (Distance):")
+            row = col.row(align=True)
+            row.prop(wm, "viewport_zoom", text="", slider=True)
+            row.operator("viewport.zoom_in", text="", icon='ZOOM_IN')
+            row.operator("viewport.zoom_out", text="", icon='ZOOM_OUT')
+            
+            # Reset buttons
+            row = layout.row(align=True)
+            row.operator("viewport.reset_transform", icon='LOOP_BACK')
+            row.operator("viewport.reset_zoom", text="Reset Zoom")
             
             # Add warning if no active 3D view
             if not get_active_view_3d():
@@ -171,6 +195,7 @@ class VIEW3D_OT_activate_control(bpy.types.Operator):
                 math.degrees(rot_euler.z)
             )
             wm.viewport_location = r3d.view_location
+            wm.viewport_zoom = r3d.view_distance
         
         # Start timer if not already running
         global handler_active
@@ -182,8 +207,8 @@ class VIEW3D_OT_activate_control(bpy.types.Operator):
 
 class VIEW3D_OT_reset_viewport_transform(bpy.types.Operator):
     bl_idname = "viewport.reset_transform"
-    bl_label = "Reset Viewport"
-    bl_description = "Reset viewport to origin"
+    bl_label = "Reset Transform"
+    bl_description = "Reset viewport location and rotation to origin"
     
     def execute(self, context):
         wm = context.window_manager
@@ -192,10 +217,49 @@ class VIEW3D_OT_reset_viewport_transform(bpy.types.Operator):
         update_viewport_from_properties()
         return {'FINISHED'}
 
+class VIEW3D_OT_reset_zoom(bpy.types.Operator):
+    bl_idname = "viewport.reset_zoom"
+    bl_label = "Reset Zoom"
+    bl_description = "Reset zoom to default value"
+    
+    def execute(self, context):
+        wm = context.window_manager
+        # Set a reasonable default zoom value
+        wm.viewport_zoom = 10.0
+        update_viewport_from_properties()
+        return {'FINISHED'}
+
+class VIEW3D_OT_zoom_in(bpy.types.Operator):
+    bl_idname = "viewport.zoom_in"
+    bl_label = "Zoom In"
+    bl_description = "Zoom in (decrease view distance)"
+    
+    def execute(self, context):
+        wm = context.window_manager
+        # Smaller value = more zoom
+        wm.viewport_zoom = max(0.1, wm.viewport_zoom * 0.8)
+        update_viewport_from_properties()
+        return {'FINISHED'}
+
+class VIEW3D_OT_zoom_out(bpy.types.Operator):
+    bl_idname = "viewport.zoom_out"
+    bl_label = "Zoom Out"
+    bl_description = "Zoom out (increase view distance)"
+    
+    def execute(self, context):
+        wm = context.window_manager
+        # Larger value = less zoom
+        wm.viewport_zoom = min(1000.0, wm.viewport_zoom * 1.25)
+        update_viewport_from_properties()
+        return {'FINISHED'}
+
 def register():
     bpy.utils.register_class(VIEW3D_PT_viewport_navigator)
     bpy.utils.register_class(VIEW3D_OT_activate_control)
     bpy.utils.register_class(VIEW3D_OT_reset_viewport_transform)
+    bpy.utils.register_class(VIEW3D_OT_reset_zoom)
+    bpy.utils.register_class(VIEW3D_OT_zoom_in)
+    bpy.utils.register_class(VIEW3D_OT_zoom_out)
     
     WindowManager = bpy.types.WindowManager
     WindowManager.viewport_location = FloatVectorProperty(
@@ -214,6 +278,15 @@ def register():
         update=lambda self, context: update_viewport_from_properties()
     )
     
+    WindowManager.viewport_zoom = FloatProperty(
+        name="Zoom",
+        description="Viewport zoom (distance). Lower values = more zoom",
+        default=10.0,
+        min=0.1,
+        max=1000.0,
+        update=lambda self, context: update_viewport_from_properties()
+    )
+    
     WindowManager.enable_viewport_control = BoolProperty(
         name="Enable Control",
         default=False
@@ -223,12 +296,16 @@ def register():
     wm = bpy.context.window_manager
     wm.viewport_location = (0.0, 0.0, 0.0)
     wm.viewport_rotation = (0.0, 0.0, 0.0)
+    wm.viewport_zoom = 10.0
     wm.enable_viewport_control = False
 
 def unregister():
     bpy.utils.unregister_class(VIEW3D_PT_viewport_navigator)
     bpy.utils.unregister_class(VIEW3D_OT_activate_control)
     bpy.utils.unregister_class(VIEW3D_OT_reset_viewport_transform)
+    bpy.utils.unregister_class(VIEW3D_OT_reset_zoom)
+    bpy.utils.unregister_class(VIEW3D_OT_zoom_in)
+    bpy.utils.unregister_class(VIEW3D_OT_zoom_out)
     
     # Stop timer if running
     global handler_active
@@ -238,6 +315,7 @@ def unregister():
     
     del bpy.types.WindowManager.viewport_location
     del bpy.types.WindowManager.viewport_rotation
+    del bpy.types.WindowManager.viewport_zoom
     del bpy.types.WindowManager.enable_viewport_control
 
 if __name__ == "__main__":
