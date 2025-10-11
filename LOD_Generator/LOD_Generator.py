@@ -26,12 +26,14 @@ from bpy.props import IntProperty, FloatProperty, BoolProperty, EnumProperty
 class LODGeneratorProperties(bpy.types.PropertyGroup):
     num_lods: IntProperty(
         name="Number of LODs",
+        description="Number of LOD levels to generate",
         default=3,
         min=1,
         max=10
     )
     face_reduction: FloatProperty(
         name="Reduction per LOD (%)",
+        description="Percentage of faces to reduce for each LOD level",
         default=50.0,
         min=1.0,
         max=99.0,
@@ -39,12 +41,28 @@ class LODGeneratorProperties(bpy.types.PropertyGroup):
     )
     process_textures: BoolProperty(
         name="Resize Textures",
+        description="Resize textures for each LOD level",
         default=True
     )
     include_sep: BoolProperty(
         name="Include -sep",
-        default=True,
-        description="Add -sep suffix to LOD object names"
+        description="Add -sep suffix to LOD names",
+        default=True
+    )
+    sep_mode: EnumProperty(
+        name="-sep Mode",
+        description="Where to apply the -sep suffix",
+        items=[
+            ('COLLECTION', "Collection", "Apply -sep to collections only"),
+            ('OBJECT', "Object", "Apply -sep to objects only"),
+            ('BOTH', "Both", "Apply -sep to both collections and objects")
+        ],
+        default='COLLECTION'
+    )
+    hide_root_collection: BoolProperty(
+        name="Hide Root Collection (-sk)",
+        description="Hide the root LOD collection with -sk suffix",
+        default=True
     )
 
 class LODGeneratorPanel(Panel):
@@ -57,18 +75,28 @@ class LODGeneratorPanel(Panel):
     def draw(self, context):
         layout = self.layout
         props = context.scene.lod_props
+        
+        # Settings
         layout.prop(props, "num_lods")
         layout.prop(props, "face_reduction")
         layout.prop(props, "process_textures")
         layout.prop(props, "include_sep")
         
-        # Two buttons: Selective and Full generation
-        row = layout.row()
-        row.operator("object.generate_lods_selected", icon='OBJECT_DATA')
-        row.operator("object.generate_lods_all", icon='SCENE_DATA')
+        # Show sep mode only when include_sep is enabled
+        if props.include_sep:
+            layout.prop(props, "sep_mode")
         
-        layout.label(text="Selective: Selected objects", icon='DOT')
+        # Hide root collection toggle
+        layout.prop(props, "hide_root_collection")
+        
+        # Buttons - Selective on the right as requested
+        row = layout.row()
+        row.operator("object.generate_lods_all", icon='SCENE_DATA', text="Full Generate")
+        row.operator("object.generate_lods_selected", icon='OBJECT_DATA', text="Selective Generate")
+        
+        # Labels
         layout.label(text="Full: All mesh objects", icon='DOT')
+        layout.label(text="Selective: Selected objects only", icon='DOT')
 
 class OBJECT_OT_GenerateLODsSelected(Operator):
     bl_label = "Generate LODs Selected"
@@ -133,6 +161,10 @@ class OBJECT_OT_GenerateLODsSelected(Operator):
 
     def _cleanup_existing_lods(self, original_obj):
         """Remove existing LOD objects and collections to prevent duplicates"""
+        # Check if the original object still exists
+        if not original_obj or original_obj.name not in bpy.data.objects:
+            return
+            
         props = bpy.context.scene.lod_props
         
         # Pattern to match LOD objects for this original object
@@ -142,25 +174,16 @@ class OBJECT_OT_GenerateLODsSelected(Operator):
         # Remove existing LOD objects
         objects_to_remove = []
         for obj in bpy.data.objects:
+            # Check if object still exists before accessing its name
+            if obj.name not in bpy.data.objects:
+                continue
             if lod_pattern.match(obj.name) and obj != original_obj:
                 objects_to_remove.append(obj)
         
         for obj in objects_to_remove:
-            bpy.data.objects.remove(obj, do_unlink=True)
-        
-        # Remove existing LOD collections
-        collections_to_remove = []
-        lod_collection_name = f"{original_obj.name}_LODs"
-        if lod_collection_name in bpy.data.collections:
-            lod_collection = bpy.data.collections[lod_collection_name]
-            # Unlink all objects from the collection first
-            for obj in list(lod_collection.objects):
-                lod_collection.objects.unlink(obj)
-            # Remove the collection
-            collections_to_remove.append(lod_collection)
-        
-        for coll in collections_to_remove:
-            bpy.data.collections.remove(coll)
+            # Double-check object still exists before removing
+            if obj.name in bpy.data.objects:
+                bpy.data.objects.remove(obj, do_unlink=True)
 
     def _get_base_name(self, name):
         """Remove existing -sep variants from name"""
@@ -169,24 +192,6 @@ class OBJECT_OT_GenerateLODsSelected(Operator):
         # Also remove any existing _LOD suffix
         base_name = re.sub(r'_LOD\d+$', '', base_name)
         return base_name
-
-    def _get_parent_collection(self, original_obj):
-        """Get a suitable parent collection that is not a LOD collection"""
-        # Get all collections the original object is in
-        original_collections = original_obj.users_collection
-        
-        if not original_collections:
-            # If object is not in any collection, use scene collection
-            return bpy.context.scene.collection
-        
-        # Prefer non-LOD collections
-        non_lod_collections = [coll for coll in original_collections if not coll.name.endswith('_LODs')]
-        
-        if non_lod_collections:
-            return non_lod_collections[0]
-        else:
-            # If all are LOD collections, use the first one (we'll create LOD collection as sibling)
-            return original_collections[0]
 
     def _process_lods(self, context, objects):
         props = context.scene.lod_props
@@ -200,18 +205,29 @@ class OBJECT_OT_GenerateLODsSelected(Operator):
         if context.object and context.object.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
 
+        # Get or create the main LODs-sk collection
+        main_lod_collection = self._get_or_create_main_lod_collection()
+
         processed_count = 0
         for original_obj in objects:
+            # Skip if object no longer exists
+            if original_obj.name not in bpy.data.objects:
+                continue
+                
             if original_obj.type != 'MESH':
                 continue
                 
             # Clean up existing LODs first to prevent duplicates
             self._cleanup_existing_lods(original_obj)
 
-            # Create LOD collection
-            lod_collection = self._create_lod_collection(original_obj)
+            # Create object's LOD collection inside main collection
+            obj_lod_collection = self._create_object_lod_collection(original_obj, main_lod_collection)
+            if obj_lod_collection is None:
+                continue
 
             current_base = original_obj
+            successful_lods = 0
+            
             for lod in range(1, props.num_lods + 1):
                 # Duplicate object
                 bpy.ops.object.select_all(action='DESELECT')
@@ -222,87 +238,142 @@ class OBJECT_OT_GenerateLODsSelected(Operator):
                 original_name = current_base.name
                 
                 # Duplicate and verify
-                bpy.ops.object.duplicate()
-                lod_obj = context.active_object
-                
-                # FIX: Check if duplication was successful
-                if lod_obj is None:
-                    self.report({'WARNING'}, f"Failed to duplicate object for LOD{lod}. Skipping.")
-                    continue
-                
-                # Additional safety check - make sure we didn't get the original object
-                if lod_obj == current_base:
-                    self.report({'WARNING'}, f"Duplication failed - got original object for LOD{lod}. Skipping.")
-                    continue
-
-                # Generate LOD name
-                base_name = self._get_base_name(original_obj.name)
-                if props.include_sep:
-                    lod_obj.name = f"{base_name}-sep_LOD{lod}"
-                else:
-                    lod_obj.name = f"{base_name}_LOD{lod}"
-
-                # Move to LOD collection
-                if lod_obj.name not in lod_collection.objects:
-                    # Remove from all current collections
-                    for coll in lod_obj.users_collection:
-                        coll.objects.unlink(lod_obj)
-                    # Add to LOD collection
-                    lod_collection.objects.link(lod_obj)
-
-                # Apply decimate modifier
-                mod = lod_obj.modifiers.new(name="Decimate", type='DECIMATE')
-                mod.ratio = 1 - reduction
                 try:
-                    bpy.ops.object.modifier_apply(modifier=mod.name)
+                    bpy.ops.object.duplicate()
+                    lod_obj = context.active_object
+                    
+                    # Check if duplication was successful
+                    if lod_obj is None or lod_obj == current_base:
+                        self.report({'WARNING'}, f"Failed to duplicate object for LOD{lod}. Skipping.")
+                        break  # Break out of the LOD loop for this object
+                    
+                    # Generate LOD name based on sep mode
+                    base_name = self._get_base_name(original_obj.name)
+                    
+                    # Object naming logic
+                    if props.include_sep and props.sep_mode in ['OBJECT', 'BOTH']:
+                        lod_obj.name = f"{base_name}-sep_LOD{lod}"
+                    else:
+                        lod_obj.name = f"{base_name}_LOD{lod}"
+
+                    # Create LOD level collection with -sep suffix inside object's collection
+                    lod_level_collection = self._create_lod_level_collection(original_obj, lod, obj_lod_collection)
+                    
+                    # Move to LOD level collection
+                    if lod_obj.name not in lod_level_collection.objects:
+                        # Remove from all current collections
+                        for coll in lod_obj.users_collection:
+                            coll.objects.unlink(lod_obj)
+                        # Add to LOD level collection
+                        lod_level_collection.objects.link(lod_obj)
+
+                    # Apply decimate modifier
+                    mod = lod_obj.modifiers.new(name="Decimate", type='DECIMATE')
+                    mod.ratio = 1 - reduction
+                    try:
+                        bpy.ops.object.modifier_apply(modifier=mod.name)
+                    except Exception as e:
+                        self.report({'WARNING'}, f"Modifier error on {lod_obj.name}: {str(e)}")
+                        # Continue with next LOD instead of failing completely
+
+                    # Process textures
+                    if props.process_textures:
+                        self._process_textures(lod_obj, lod, reduction)
+
+                    current_base = lod_obj
+                    successful_lods += 1
+                    
                 except Exception as e:
-                    self.report({'WARNING'}, f"Modifier error on {lod_obj.name}: {str(e)}")
-                    # Continue with next LOD instead of failing completely
-
-                # Process textures
-                if props.process_textures:
-                    self._process_textures(lod_obj, lod, reduction)
-
-                current_base = lod_obj
+                    self.report({'WARNING'}, f"Error creating LOD{lod}: {str(e)}")
+                    break  # Break out of the LOD loop for this object
 
             processed_count += 1
 
         # Select original objects again
         bpy.ops.object.select_all(action='DESELECT')
         for obj in objects:
-            if obj.type == 'MESH':
+            if obj.name in bpy.data.objects and obj.type == 'MESH':
                 obj.select_set(True)
-        if objects:
+        if objects and objects[0].name in bpy.data.objects:
             context.view_layer.objects.active = objects[0]
 
         self.report({'INFO'}, f"LOD generation completed for {processed_count} objects!")
         return {'FINISHED'}
 
-    def _create_lod_collection(self, original_obj):
-        """Create LOD collection and hide it by default"""
-        collection_name = f"{original_obj.name}_LODs"
+    def _get_or_create_main_lod_collection(self):
+        """Get or create the main LODs-sk collection"""
+        main_collection_name = "LODs-sk"
         
-        # Remove existing collection if it exists
-        if collection_name in bpy.data.collections:
-            old_coll = bpy.data.collections[collection_name]
+        # Remove existing main collection if it exists
+        if main_collection_name in bpy.data.collections:
+            old_coll = bpy.data.collections[main_collection_name]
             bpy.data.collections.remove(old_coll)
         
-        # Create new collection
+        # Create new main collection
+        main_collection = bpy.data.collections.new(main_collection_name)
+        
+        # Link to scene collection
+        bpy.context.scene.collection.children.link(main_collection)
+        
+        # Hide the main collection only if hide_root_collection is enabled
+        if bpy.context.scene.lod_props.hide_root_collection:
+            main_collection.hide_viewport = True
+            main_collection.hide_render = True
+        
+        return main_collection
+
+    def _create_object_lod_collection(self, original_obj, main_collection):
+        """Create object's LOD collection inside main collection (no -sep suffix)"""
+        # Check if object still exists
+        if original_obj.name not in bpy.data.objects:
+            return None
+            
+        base_name = self._get_base_name(original_obj.name)
+        
+        # Object collection name (no suffix)
+        collection_name = f"{base_name}_LODs"
+        
+        # Remove existing collection if it exists in main
+        if collection_name in main_collection.children:
+            old_coll = main_collection.children[collection_name]
+            # Remove all child collections first
+            for child_coll in list(old_coll.children):
+                bpy.data.collections.remove(child_coll)
+            bpy.data.collections.remove(old_coll)
+        
+        # Create new object collection
+        obj_collection = bpy.data.collections.new(collection_name)
+        
+        # Link to main collection
+        main_collection.children.link(obj_collection)
+        
+        return obj_collection
+
+    def _create_lod_level_collection(self, original_obj, lod_level, obj_collection):
+        """Create LOD level collection with -sep suffix inside object's collection"""
+        base_name = self._get_base_name(original_obj.name)
+        
+        # LOD level collection name with -sep
+        collection_name = f"{base_name}_LOD{lod_level}-sep"
+        
+        # Remove existing collection if it exists in object collection
+        if collection_name in obj_collection.children:
+            old_coll = obj_collection.children[collection_name]
+            bpy.data.collections.remove(old_coll)
+        
+        # Create new LOD level collection
         lod_collection = bpy.data.collections.new(collection_name)
         
-        # Find parent collection (not a LOD collection)
-        parent_collection = self._get_parent_collection(original_obj)
-        
-        # Link the LOD collection to parent
-        parent_collection.children.link(lod_collection)
-        
-        # Hide the collection
-        lod_collection.hide_viewport = True
-        lod_collection.hide_render = True
+        # Link to object collection
+        obj_collection.children.link(lod_collection)
         
         return lod_collection
 
     def _process_textures(self, lod_obj, lod_level, reduction):
+        # Check if object still exists
+        if lod_obj.name not in bpy.data.objects:
+            return
+            
         blend_path = bpy.path.abspath("//")
         lod_folder = os.path.join(blend_path, f"LOD{lod_level}")
         os.makedirs(lod_folder, exist_ok=True)
@@ -474,13 +545,25 @@ class OBJECT_OT_GenerateLODsAll(Operator):
         if context.object and context.object.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
 
+        # Get or create the main LODs-sk collection
+        main_lod_collection = self._get_or_create_main_lod_collection()
+
         processed_count = 0
         for original_obj in mesh_objects:
+            # Check if object still exists
+            if original_obj.name not in bpy.data.objects:
+                continue
+                
             # Use the same methods from the selected operator
             self._cleanup_existing_lods(original_obj)
-            lod_collection = self._create_lod_collection(original_obj)
+            obj_lod_collection = self._create_object_lod_collection(original_obj, main_lod_collection)
+            
+            if obj_lod_collection is None:
+                continue
 
             current_base = original_obj
+            successful_lods = 0
+            
             for lod in range(1, props.num_lods + 1):
                 bpy.ops.object.select_all(action='DESELECT')
                 current_base.select_set(True)
@@ -489,46 +572,52 @@ class OBJECT_OT_GenerateLODsAll(Operator):
                 # Store the original object name for verification
                 original_name = current_base.name
                 
-                # Duplicate and verify
-                bpy.ops.object.duplicate()
-                lod_obj = context.active_object
-                
-                # FIX: Check if duplication was successful
-                if lod_obj is None:
-                    self.report({'WARNING'}, f"Failed to duplicate object for LOD{lod}. Skipping.")
-                    continue
-                
-                # Additional safety check - make sure we didn't get the original object
-                if lod_obj == current_base:
-                    self.report({'WARNING'}, f"Duplication failed - got original object for LOD{lod}. Skipping.")
-                    continue
-                
-                base_name = self._get_base_name(original_obj.name)
-                if props.include_sep:
-                    lod_obj.name = f"{base_name}-sep_LOD{lod}"
-                else:
-                    lod_obj.name = f"{base_name}_LOD{lod}"
-
-                # Move to LOD collection
-                if lod_obj.name not in lod_collection.objects:
-                    for coll in lod_obj.users_collection:
-                        coll.objects.unlink(lod_obj)
-                    lod_collection.objects.link(lod_obj)
-
-                # Apply decimate modifier
-                mod = lod_obj.modifiers.new(name="Decimate", type='DECIMATE')
-                mod.ratio = 1 - reduction
                 try:
-                    bpy.ops.object.modifier_apply(modifier=mod.name)
+                    # Duplicate and verify
+                    bpy.ops.object.duplicate()
+                    lod_obj = context.active_object
+                    
+                    # Check if duplication was successful
+                    if lod_obj is None or lod_obj == current_base:
+                        self.report({'WARNING'}, f"Failed to duplicate object for LOD{lod}. Skipping.")
+                        break  # Break out of the LOD loop for this object
+                    
+                    base_name = self._get_base_name(original_obj.name)
+                    
+                    # Object naming logic
+                    if props.include_sep and props.sep_mode in ['OBJECT', 'BOTH']:
+                        lod_obj.name = f"{base_name}-sep_LOD{lod}"
+                    else:
+                        lod_obj.name = f"{base_name}_LOD{lod}"
+
+                    # Create LOD level collection with -sep suffix inside object's collection
+                    lod_level_collection = self._create_lod_level_collection(original_obj, lod, obj_lod_collection)
+                    
+                    # Move to LOD level collection
+                    if lod_obj.name not in lod_level_collection.objects:
+                        for coll in lod_obj.users_collection:
+                            coll.objects.unlink(lod_obj)
+                        lod_level_collection.objects.link(lod_obj)
+
+                    # Apply decimate modifier
+                    mod = lod_obj.modifiers.new(name="Decimate", type='DECIMATE')
+                    mod.ratio = 1 - reduction
+                    try:
+                        bpy.ops.object.modifier_apply(modifier=mod.name)
+                    except Exception as e:
+                        self.report({'WARNING'}, f"Modifier error on {lod_obj.name}: {str(e)}")
+                        continue
+
+                    # Process textures
+                    if props.process_textures:
+                        self._process_textures(lod_obj, lod, reduction)
+
+                    current_base = lod_obj
+                    successful_lods += 1
+                    
                 except Exception as e:
-                    self.report({'WARNING'}, f"Modifier error on {lod_obj.name}: {str(e)}")
-                    continue
-
-                # Process textures
-                if props.process_textures:
-                    self._process_textures(lod_obj, lod, reduction)
-
-                current_base = lod_obj
+                    self.report({'WARNING'}, f"Error creating LOD{lod}: {str(e)}")
+                    break  # Break out of the LOD loop for this object
 
             processed_count += 1
 
@@ -538,6 +627,10 @@ class OBJECT_OT_GenerateLODsAll(Operator):
     # Reuse the same helper methods from OBJECT_OT_GenerateLODsSelected
     def _cleanup_existing_lods(self, original_obj):
         """Remove existing LOD objects and collections to prevent duplicates"""
+        # Check if the original object still exists
+        if not original_obj or original_obj.name not in bpy.data.objects:
+            return
+            
         props = bpy.context.scene.lod_props
         
         # Pattern to match LOD objects for this original object
@@ -547,23 +640,16 @@ class OBJECT_OT_GenerateLODsAll(Operator):
         # Remove existing LOD objects
         objects_to_remove = []
         for obj in bpy.data.objects:
+            # Check if object still exists before accessing its name
+            if obj.name not in bpy.data.objects:
+                continue
             if lod_pattern.match(obj.name) and obj != original_obj:
                 objects_to_remove.append(obj)
         
         for obj in objects_to_remove:
-            bpy.data.objects.remove(obj, do_unlink=True)
-        
-        # Remove existing LOD collections
-        collections_to_remove = []
-        lod_collection_name = f"{original_obj.name}_LODs"
-        if lod_collection_name in bpy.data.collections:
-            lod_collection = bpy.data.collections[lod_collection_name]
-            for obj in list(lod_collection.objects):
-                lod_collection.objects.unlink(obj)
-            collections_to_remove.append(lod_collection)
-        
-        for coll in collections_to_remove:
-            bpy.data.collections.remove(coll)
+            # Double-check object still exists before removing
+            if obj.name in bpy.data.objects:
+                bpy.data.objects.remove(obj, do_unlink=True)
 
     def _get_base_name(self, name):
         """Remove existing -sep variants from name"""
@@ -571,38 +657,80 @@ class OBJECT_OT_GenerateLODsAll(Operator):
         base_name = re.sub(r'_LOD\d+$', '', base_name)
         return base_name
 
-    def _get_parent_collection(self, original_obj):
-        """Get a suitable parent collection that is not a LOD collection"""
-        original_collections = original_obj.users_collection
+    def _get_or_create_main_lod_collection(self):
+        """Get or create the main LODs-sk collection"""
+        main_collection_name = "LODs-sk"
         
-        if not original_collections:
-            return bpy.context.scene.collection
-        
-        non_lod_collections = [coll for coll in original_collections if not coll.name.endswith('_LODs')]
-        
-        if non_lod_collections:
-            return non_lod_collections[0]
-        else:
-            return original_collections[0]
-
-    def _create_lod_collection(self, original_obj):
-        """Create LOD collection and hide it by default"""
-        collection_name = f"{original_obj.name}_LODs"
-        
-        if collection_name in bpy.data.collections:
-            old_coll = bpy.data.collections[collection_name]
+        # Remove existing main collection if it exists
+        if main_collection_name in bpy.data.collections:
+            old_coll = bpy.data.collections[main_collection_name]
             bpy.data.collections.remove(old_coll)
         
-        lod_collection = bpy.data.collections.new(collection_name)
-        parent_collection = self._get_parent_collection(original_obj)
-        parent_collection.children.link(lod_collection)
+        # Create new main collection
+        main_collection = bpy.data.collections.new(main_collection_name)
         
-        lod_collection.hide_viewport = True
-        lod_collection.hide_render = True
+        # Link to scene collection
+        bpy.context.scene.collection.children.link(main_collection)
+        
+        # Hide the main collection only if hide_root_collection is enabled
+        if bpy.context.scene.lod_props.hide_root_collection:
+            main_collection.hide_viewport = True
+            main_collection.hide_render = True
+        
+        return main_collection
+
+    def _create_object_lod_collection(self, original_obj, main_collection):
+        """Create object's LOD collection inside main collection (no -sep suffix)"""
+        # Check if object still exists
+        if original_obj.name not in bpy.data.objects:
+            return None
+            
+        base_name = self._get_base_name(original_obj.name)
+        
+        # Object collection name (no suffix)
+        collection_name = f"{base_name}_LODs"
+        
+        # Remove existing collection if it exists in main
+        if collection_name in main_collection.children:
+            old_coll = main_collection.children[collection_name]
+            # Remove all child collections first
+            for child_coll in list(old_coll.children):
+                bpy.data.collections.remove(child_coll)
+            bpy.data.collections.remove(old_coll)
+        
+        # Create new object collection
+        obj_collection = bpy.data.collections.new(collection_name)
+        
+        # Link to main collection
+        main_collection.children.link(obj_collection)
+        
+        return obj_collection
+
+    def _create_lod_level_collection(self, original_obj, lod_level, obj_collection):
+        """Create LOD level collection with -sep suffix inside object's collection"""
+        base_name = self._get_base_name(original_obj.name)
+        
+        # LOD level collection name with -sep
+        collection_name = f"{base_name}_LOD{lod_level}-sep"
+        
+        # Remove existing collection if it exists in object collection
+        if collection_name in obj_collection.children:
+            old_coll = obj_collection.children[collection_name]
+            bpy.data.collections.remove(old_coll)
+        
+        # Create new LOD level collection
+        lod_collection = bpy.data.collections.new(collection_name)
+        
+        # Link to object collection
+        obj_collection.children.link(lod_collection)
         
         return lod_collection
 
     def _process_textures(self, lod_obj, lod_level, reduction):
+        # Check if object still exists
+        if lod_obj.name not in bpy.data.objects:
+            return
+            
         blend_path = bpy.path.abspath("//")
         lod_folder = os.path.join(blend_path, f"LOD{lod_level}")
         os.makedirs(lod_folder, exist_ok=True)
