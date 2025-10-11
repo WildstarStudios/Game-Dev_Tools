@@ -1,8 +1,8 @@
 bl_info = {
-    "name": "LOD Generator",
-    "author": "Giorgi Samukashvili (3DBullet)",
-    "version": (1, 2),
-    "blender": (4, 3, 0),
+    "name": "LOD Generator rewritten",
+    "author": "Wildstar Studios",
+    "version": (1, 0),
+    "blender": (4, 5, 0),
     "location": "View3D > Sidebar > Export",
     "description": "LOD Generation tool with texture resizing capabilities.\n\n" 
                    "Instructions:\n"
