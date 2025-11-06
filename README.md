@@ -12,7 +12,7 @@ To Do, Blender:
 To Do, Godot:
 - ❌ Auto Instancer Plugin (idea)
 
-## ⚠️ Important Notice for Cloud Storage Users
+## ⚠️ Important Notice for Cloud Storage Users on Advanced Auto-Exporter
 
 **Versions 2.4+ include critical path fixes for cloud storage and sync environments.**
 
