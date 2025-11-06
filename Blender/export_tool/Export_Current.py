@@ -1,7 +1,7 @@
 bl_info = {
     "name": "Advanced Auto-Exporter",
     "author": "WildStar Studios", 
-    "version": (2, 4, 0),
+    "version": (2, 4, 1),
     "blender": (4, 5, 0),
     "location": "View3D > Sidebar > Export",
     "description": "Advanced export with enhanced compatibility and visibility controls",
@@ -1716,7 +1716,8 @@ def get_track_file_path():
                 blend_name = os.path.splitext(os.path.basename(bpy.data.filepath))[0]
             else:
                 blend_name = "unsaved"
-            return os.path.join(scene_props.export_path, f"{blend_name}.export.track")
+            export_path_abs = bpy.path.abspath(scene_props.export_path)
+            return os.path.join(export_path_abs, f"{blend_name}.export.track")
         else:
             return get_blend_track_file_path()
     else:
@@ -1726,7 +1727,8 @@ def get_blend_track_file_path():
     """Get track file path in blend file directory"""
     if bpy.data.filepath:
         blend_name = os.path.splitext(os.path.basename(bpy.data.filepath))[0]
-        return os.path.join(os.path.dirname(bpy.data.filepath), f"{blend_name}.export.track")
+        blend_dir = os.path.dirname(bpy.path.abspath(bpy.data.filepath))
+        return os.path.join(blend_dir, f"{blend_name}.export.track")
     else:
         return os.path.join(os.path.expanduser("~"), "unsaved_export.track")
 
@@ -1757,11 +1759,14 @@ def get_final_export_path(base_path, dir_modifier, clean_name, scope, format_typ
     """Get the final export path with directory modifiers applied"""
     extension = get_extension(format_type)
     
+    # Convert base path to absolute path
+    base_path_abs = bpy.path.abspath(base_path)
+    
     if dir_modifier:
-        safe_path = os.path.join(base_path, dir_modifier)
+        safe_path = os.path.join(base_path_abs, dir_modifier)
         return os.path.join(safe_path, f"{clean_name}{extension}")
     else:
-        return os.path.join(base_path, f"{clean_name}{extension}")
+        return os.path.join(base_path_abs, f"{clean_name}{extension}")
 
 def ensure_directory_exists(filepath):
     """Ensure the directory for a filepath exists, return created status"""
@@ -1782,36 +1787,39 @@ def resolve_export_directory(obj, collection, export_scope, base_export_path):
     """Resolve the export directory based on scope and modifiers"""
     obj_clean, obj_modifiers = parse_modifiers(obj.name)
     
+    # Convert base path to absolute
+    base_export_path_abs = bpy.path.abspath(base_export_path)
+    
     if export_scope == 'SCENE':
         scene_props = bpy.context.scene.advanced_glb_props
         scene_clean, scene_modifiers = parse_modifiers(scene_props.scene_export_filename)
         dir_path = scene_modifiers.get('dir')
         if dir_path:
-            return os.path.join(base_export_path, dir_path)
-        return base_export_path
+            return os.path.join(base_export_path_abs, dir_path)
+        return base_export_path_abs
     
     elif export_scope == 'COLLECTION':
         if collection:
             col_clean, col_modifiers = parse_modifiers(collection.name)
             dir_path = col_modifiers.get('dir')
             if dir_path:
-                return os.path.join(base_export_path, dir_path)
-        return base_export_path
+                return os.path.join(base_export_path_abs, dir_path)
+        return base_export_path_abs
     
     elif export_scope == 'OBJECT':
         if collection:
             col_clean, col_modifiers = parse_modifiers(collection.name)
             dir_path = col_modifiers.get('dir')
             if dir_path:
-                return os.path.join(base_export_path, dir_path)
+                return os.path.join(base_export_path_abs, dir_path)
         
         dir_path = obj_modifiers.get('dir')
         if dir_path:
-            return os.path.join(base_export_path, dir_path)
+            return os.path.join(base_export_path_abs, dir_path)
         
-        return base_export_path
+        return base_export_path_abs
     
-    return base_export_path
+    return base_export_path_abs
 
 def move_to_3d_cursor(obj, cursor_location):
     """Move object to 3D cursor while preserving its local transform"""
@@ -1874,8 +1882,10 @@ def export_selected(context, selected_items):
         print("Export failed: No export directory specified")
         return {'CANCELLED'}
     
-    if not os.path.exists(scene_props.export_path):
-        os.makedirs(scene_props.export_path, exist_ok=True)
+    # FIXED: Use absolute path for directory creation
+    export_path_abs = bpy.path.abspath(scene_props.export_path)
+    if not os.path.exists(export_path_abs):
+        os.makedirs(export_path_abs, exist_ok=True)
     
     original_positions = {}
     cursor_location = bpy.context.scene.cursor.location.copy()
@@ -2094,8 +2104,10 @@ def export_glb(context):
         print("Export failed: No export directory specified")
         return {'CANCELLED'}
     
-    if not os.path.exists(scene_props.export_path):
-        os.makedirs(scene_props.export_path, exist_ok=True)
+    # FIXED: Use absolute path for directory creation
+    export_path_abs = bpy.path.abspath(scene_props.export_path)
+    if not os.path.exists(export_path_abs):
+        os.makedirs(export_path_abs, exist_ok=True)
     
     original_positions = {}
     cursor_location = bpy.context.scene.cursor.location.copy()
