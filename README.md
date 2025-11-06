@@ -12,6 +12,3 @@ To Do, Blender:
 
 To Do, Godot:
 - ❌ Auto Instancer Plugin (idea)
-
-Compatibility
-- ❌ auto export tool port to 2.79b(idea)
