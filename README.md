@@ -27,3 +27,8 @@ If you're using versions **1.0 through 2.3** and experience export directory err
 - Proper handling of relative paths (`//`) in cloud-synced folders
 - Better compatibility with OneDrive, Google Drive, Dropbox, and other cloud storage
 - Automatic path normalization for all export operations in sync environments
+
+### Additional Benefits in 2.4+:
+- **More Stable Exports** - Reduced failures from path resolution issues
+- **Faster Export Operations** - Optimized directory creation and file handling  
+- **Better Cross-Platform Support** - Consistent performance across Windows, Mac, and Linux
